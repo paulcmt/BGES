@@ -10,3 +10,5 @@ This project is about creating a Data Warehouse for a company that wants to esti
    - `pip install -r requirements.txt`
 4. Run the docker container
    - `docker-compose up -d`
+5. Run the ETL process
+   - `python etl.py`
