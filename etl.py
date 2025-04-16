@@ -80,6 +80,8 @@ def extract_city_data(city):
     personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
     if os.path.exists(personnel_path):
         personnel_df = pd.read_csv(personnel_path, delimiter=';')
+        # Personnel file doesn't have date in filename, use current date
+        personnel_df['extraction_date'] = datetime.now().date()
         city_data['personnel'] = personnel_df
         print(f"{SUCCESS}✓ Successfully extracted personnel data for {city}{RESET}")
     
@@ -91,10 +93,13 @@ def extract_city_data(city):
         informatique_dfs = []
         for file in informatique_files:
             df = pd.read_csv(os.path.join(informatique_dir, file), delimiter=';')
+            # Extract date from filename (format: MATERIEL_INFORMATIQUE_YYYYMMDD.txt)
+            file_date = datetime.strptime(file.split('_')[-1].split('.')[0], '%Y%m%d')
+            df['extraction_date'] = file_date
             informatique_dfs.append(df)
         if informatique_dfs:
             city_data['informatique'] = pd.concat(informatique_dfs, ignore_index=True)
-            print(f"{SUCCESS}✓ Successfully extracted informatique data for {city}{RESET}")
+            print(f"{SUCCESS}✓ Successfully extracted informatique data for {city} from {len(informatique_files)} files{RESET}")
     
     # Extract mission data
     mission_dir = f"{BASE_PATH}/BDD_BGES_{city}/BDD_BGES_{city}_MISSION"
@@ -104,10 +109,13 @@ def extract_city_data(city):
         mission_dfs = []
         for file in mission_files:
             df = pd.read_csv(os.path.join(mission_dir, file), delimiter=';')
+            # Extract date from filename (format: MISSION_YYYYMMDD.txt)
+            file_date = datetime.strptime(file.split('_')[-1].split('.')[0], '%Y%m%d')
+            df['extraction_date'] = file_date
             mission_dfs.append(df)
         if mission_dfs:
             city_data['mission'] = pd.concat(mission_dfs, ignore_index=True)
-            print(f"{SUCCESS}✓ Successfully extracted mission data for {city}{RESET}")
+            print(f"{SUCCESS}✓ Successfully extracted mission data for {city} from {len(mission_files)} files{RESET}")
     
     return city_data
 
@@ -146,7 +154,8 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'VILLE_DESTINATION': 'DESTINATION_CITY',
         'PAYS_DESTINATION': 'DESTINATION_COUNTRY',
         'TRANSPORT': 'TRANSPORT_ID',
-        'ALLER_RETOUR': 'IS_ROUND_TRIP'
+        'ALLER_RETOUR': 'IS_ROUND_TRIP',
+        'extraction_date': 'EXTRACTION_DATE'  # Keep the extraction date
     })
     
     # Convert date to datetime
@@ -187,7 +196,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'TRAVEL_ID', 'EMPLOYEE_ID', 'MISSION_TYPE_ID', 'DEPARTURE_CITY',
         'DEPARTURE_COUNTRY', 'DESTINATION_CITY', 'DESTINATION_COUNTRY',
         'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP',
-        'EMISSIONS_KG_CO2E'
+        'EMISSIONS_KG_CO2E', 'EXTRACTION_DATE'  # Include extraction date
     ]
     transformed = transformed[required_columns]
     print(f"{SUCCESS}✓ Column selection completed{RESET}")
@@ -231,3 +240,11 @@ if __name__ == "__main__":
     print(f"Total number of missions: {len(transformed_missions)}")
     print("\nFirst few rows of transformed data:")
     print(transformed_missions.head())
+    # some stats about the data
+    print(f"Total number of missions: {len(transformed_missions)}")
+    print(f"Total number of unique employees: {transformed_missions['EMPLOYEE_ID'].nunique()}")
+    print(f"Total number of unique cities: {transformed_missions['DEPARTURE_CITY'].nunique()}")
+    print(f"Total number of unique countries: {transformed_missions['DEPARTURE_COUNTRY'].nunique()}")
+    print(f"Total number of unique mission types: {transformed_missions['MISSION_TYPE_ID'].nunique()}")
+    print(f"Total number of unique transports: {transformed_missions['TRANSPORT_ID'].nunique()}")
+    print(f"Total number of unique extraction dates: {transformed_missions['EXTRACTION_DATE'].nunique()}")
