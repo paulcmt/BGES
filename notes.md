@@ -65,5 +65,5 @@ Elle cherche principalement à estimer son BGES en fonction :
 ## NOTES
 
 - Les données sont en plusieurs langues donc il faudra homogénéiser les données en les mettant toutes en anglais.
-- Pour estimer l'empreinte carbone de chaque transport, on peut utiliser la lib GeoPy.
+- Pour estimer l'empreinte carbone de chaque transport, on peut utiliser la lib GeoPy et le site de Labos1point5.
 - Des données sont manquantes, il faudra les estimer.

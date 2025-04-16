@@ -1,0 +1,17 @@
+category	subcategory	subsubcategory	unit	name	year	co2	ch4	n2o	other	total	uncertainty	ef.unit
+Véhicules	Voiture	Essence	km	Voiture particulière, moyenne parc, motorisation essence	2018	0	0	0	0	0.2234	0.6	kg eCO2/km
+Véhicules	Voiture	Diesel	km	Voiture particulière , moyenne parc, motorisation gazole	2018	0	0	0	0	0.2121	0.6	kg eCO2/km
+Véhicules	Voiture	Motorisation inconnue	km	Voiture particulière, moyenne parc, motorisation moyenne	2018	0	0	0	0	0.2156	0.6	kg eCO2/km
+Véhicules	Voiture	GPL	km	Voiture particulière, moyenne parc, motorisation GPL	2018	0	0	0	0	0.2174	0.6	kg eCO2/km
+Véhicules	Voiture	GNV	km	Voiture particulière, moyenne parc, motorisation GNV	2018	0	0	0	0	0.2218	0.6	kg eCO2/km
+Véhicules	Voiture	E85	km	Voiture particulière, moyenne parc, motorisation E85	2018	0	0	0	0	0.1467	0.6	kg eCO2/km
+Véhicules	Voiture	Hybride	km	Voiture particulière - Coeur de gamme - Véhicule compact - Hybride full P2	2020	0	0	0	0	0.1828	0.7	kg eCO2/km
+Véhicules	Voiture	Électrique	km	Voiture particulière - Coeur de gamme - Véhicule compact - Electrique	2020	0	0	0	0	0.1034	0.7	kg eCO2/km
+Transports	Avion	Court courrier (< 1000 km)	km	Avion court courrier, avec traînées	2022	0	0	0	0	0.2586	0.37	kg eCO2/km
+Transports	Avion	Moyen courrier (< 1001 - 3500km)	km	Avion moyen courrier, avec traînées	2022	0	0	0	0	0.1875	0.37	kg eCO2/km
+Transports	Avion	Long courrier (> 3500 km)	km	Avion long courrier, avec traînées	2022	0	0	0	0	0.152	0.37	kg eCO2/km
+Transports	Ferroviaire	TGV > 200 km	km	TGV	2021	0	0	0	0	0.0033	0.2	kg eCO2/km
+Transports	Ferroviaire	Train < 200 km	km	Non disponible	2019	0	0	0	0	0.018	0.6	kg eCO2/km
+Transports	Bus	Bus > 250 000 habitants	km	Autobus moyen - Agglomération de plus de 250 000 habitants	2021	0	0	0	0	0.129	0.6	kg eCO2/km
+Transports	Bus	Bus 100 000 - 250 000 habitants	km	Autobus moyen - Agglomération de 100 000 à 250 000 habitants	2021	0	0	0	0	0.137	0.6	kg eCO2/km
+Transports	Bus	Bus < 100 000 habitants	km	Autobus moyen - Agglomération moins de 100 000 habitants	2021	0	0	0	0	0.146	0.6	kg eCO2/km

@@ -8,4 +8,5 @@ This project is about creating a Data Warehouse for a company that wants to esti
 2. Create a virtual environment
 3. Install the dependencies
    - `pip install -r requirements.txt`
-4. Run the notebook
+4. Run the docker container
+   - `docker-compose up -d`
