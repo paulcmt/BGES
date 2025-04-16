@@ -3,3 +3,5 @@ pandas
 pyspark
 numpy
 pyarrow
+sqlalchemy
+psycopg2
