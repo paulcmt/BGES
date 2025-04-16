@@ -155,7 +155,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'PAYS_DESTINATION': 'DESTINATION_COUNTRY',
         'TRANSPORT': 'TRANSPORT_ID',
         'ALLER_RETOUR': 'IS_ROUND_TRIP',
-        'extraction_date': 'EXTRACTION_DATE'  # Keep the extraction date
+        'extraction_date': 'EXTRACTION_DATE'
     })
     
     # Convert date to datetime
@@ -170,9 +170,8 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     transformed['MISSION_TYPE_ID'] = transformed['MISSION_TYPE_ID'].str.lower().map(MISSION_TYPE_TRANSLATIONS)
     print(f"{SUCCESS}✓ Mission type translation completed{RESET}")
     
-    # Calculate distances with progress indicator
+    # Calculate distances
     print(f"{INFO}Calculating distances between cities...{RESET}")
-    total_rows = len(transformed)
     transformed['DISTANCE_KM'] = transformed.apply(
         lambda row: calculate_distance(
             row['DEPARTURE_CITY'],
@@ -182,11 +181,12 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         ),
         axis=1
     )
-    print(f"{SUCCESS}✓ Distance calculation completed{RESET}")
+    print(f"{SUCCESS}✓ Calculated distances for {len(transformed)} missions{RESET}")
     
     # Double the distance for round trips
+    round_trips = transformed['IS_ROUND_TRIP'].sum()
     transformed.loc[transformed['IS_ROUND_TRIP'], 'DISTANCE_KM'] *= 2
-    print(f"{SUCCESS}✓ Round trip distance adjustment completed{RESET}")
+    print(f"{SUCCESS}✓ Adjusted distances for {round_trips} round trips{RESET}")
     
     # Placeholder for emissions (will be implemented later)
     transformed['EMISSIONS_KG_CO2E'] = 0
@@ -196,7 +196,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'TRAVEL_ID', 'EMPLOYEE_ID', 'MISSION_TYPE_ID', 'DEPARTURE_CITY',
         'DEPARTURE_COUNTRY', 'DESTINATION_CITY', 'DESTINATION_COUNTRY',
         'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP',
-        'EMISSIONS_KG_CO2E', 'EXTRACTION_DATE'  # Include extraction date
+        'EMISSIONS_KG_CO2E', 'EXTRACTION_DATE'
     ]
     transformed = transformed[required_columns]
     print(f"{SUCCESS}✓ Column selection completed{RESET}")
@@ -243,8 +243,4 @@ if __name__ == "__main__":
     # some stats about the data
     print(f"Total number of missions: {len(transformed_missions)}")
     print(f"Total number of unique employees: {transformed_missions['EMPLOYEE_ID'].nunique()}")
-    print(f"Total number of unique cities: {transformed_missions['DEPARTURE_CITY'].nunique()}")
-    print(f"Total number of unique countries: {transformed_missions['DEPARTURE_COUNTRY'].nunique()}")
-    print(f"Total number of unique mission types: {transformed_missions['MISSION_TYPE_ID'].nunique()}")
-    print(f"Total number of unique transports: {transformed_missions['TRANSPORT_ID'].nunique()}")
-    print(f"Total number of unique extraction dates: {transformed_missions['EXTRACTION_DATE'].nunique()}")
+    print(f"Total number of round trips: {transformed_missions['IS_ROUND_TRIP'].sum()}")
