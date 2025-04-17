@@ -10,12 +10,24 @@ CREATE TABLE IF NOT EXISTS dim_location (
     country VARCHAR(100)
 );
 
+CREATE TABLE IF NOT EXISTS dim_date_time (
+    date_id TIMESTAMP PRIMARY KEY,
+    date DATE,
+    day INT,
+    month INT,
+    year INT,
+    hour INT,
+    minute INT,
+    second INT
+);
+
 CREATE TABLE IF NOT EXISTS dim_employee (
     employee_id VARCHAR(50) PRIMARY KEY,
     last_name VARCHAR(100),
     first_name VARCHAR(100),
     birth_date DATE,
-    birth_location_id INT,
+    birth_city VARCHAR(100),
+    birth_country VARCHAR(100),
     social_security_number VARCHAR(50),
     phone_country_code VARCHAR(10),
     phone_number VARCHAR(50),
@@ -23,12 +35,11 @@ CREATE TABLE IF NOT EXISTS dim_employee (
     address_street_name VARCHAR(200),
     address_complement VARCHAR(200),
     postal_code VARCHAR(20),
-    current_location_id INT,
+    current_city VARCHAR(100),
+    current_country VARCHAR(100),
     sector_id INT,
     creation_date TIMESTAMP,
     last_update_date TIMESTAMP,
-    FOREIGN KEY (birth_location_id) REFERENCES dim_location(location_id),
-    FOREIGN KEY (current_location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (sector_id) REFERENCES dim_sector(sector_id)
 );
 
@@ -37,13 +48,6 @@ CREATE TABLE IF NOT EXISTS dim_equipment (
     equipment_type VARCHAR(100),
     model VARCHAR(100),
     co2_impact_kg DECIMAL(10,2)
-);
-
-CREATE TABLE IF NOT EXISTS dim_time (
-    date_id DATE PRIMARY KEY,
-    day INT,
-    month INT,
-    year INT
 );
 
 CREATE TABLE IF NOT EXISTS dim_mission_type (
@@ -63,10 +67,11 @@ CREATE TABLE IF NOT EXISTS fact_employee_equipment (
     equipment_id VARCHAR(50),
     employee_id VARCHAR(50),
     location_id INT,
-    purchase_date TIMESTAMP,
+    purchase_date_id TIMESTAMP,
     FOREIGN KEY (equipment_id) REFERENCES dim_equipment(equipment_id),
     FOREIGN KEY (employee_id) REFERENCES dim_employee(employee_id),
-    FOREIGN KEY (location_id) REFERENCES dim_location(location_id)
+    FOREIGN KEY (location_id) REFERENCES dim_location(location_id),
+    FOREIGN KEY (purchase_date_id) REFERENCES dim_date_time(date_id)
 );
 
 CREATE TABLE IF NOT EXISTS fact_business_travel (
@@ -76,7 +81,7 @@ CREATE TABLE IF NOT EXISTS fact_business_travel (
     departure_location_id INT,
     destination_location_id INT,
     transport_id INT,
-    date_id DATE,
+    date_id TIMESTAMP,
     distance_km DECIMAL(10,2),
     is_round_trip BOOLEAN,
     emissions_kg_co2e DECIMAL(10,2),
@@ -85,7 +90,7 @@ CREATE TABLE IF NOT EXISTS fact_business_travel (
     FOREIGN KEY (departure_location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (destination_location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (transport_id) REFERENCES dim_transport(transport_id),
-    FOREIGN KEY (date_id) REFERENCES dim_time(date_id)
+    FOREIGN KEY (date_id) REFERENCES dim_date_time(date_id)
 );
 
 -- Verify tables were created

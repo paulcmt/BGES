@@ -1,0 +1,36 @@
+@startuml Database Schema
+
+' Set skin parameters for better visualization
+skinparam linetype ortho
+skinparam class {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+}
+
+' Dimension Tables
+class "dim_mission_type" as mission_type
+class "dim_transport" as transport
+class "dim_date_time" as date_time
+class "dim_location" as location
+class "dim_sector" as sector
+class "dim_equipment" as equipment
+class "dim_employee" as employee
+
+' Fact Tables
+class "fact_business_travel" as business_travel
+class "fact_employee_equipment" as employee_equipment
+
+' Relationships
+employee -- business_travel
+employee -- employee_equipment
+employee -- sector
+mission_type -- business_travel
+transport -- business_travel
+date_time -- business_travel
+location -- business_travel
+location -- employee_equipment
+equipment -- employee_equipment
+date_time -- employee_equipment
+
+@enduml 

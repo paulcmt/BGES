@@ -31,8 +31,8 @@ def get_city_coordinates(city: str, country: str) -> Optional[Tuple[float, float
     """
     try:
         # Standardize city and country names
-        city = CITY_MAPPING.get(city.upper(), city)
-        country = COUNTRY_MAPPING.get(country, country)
+        city = CITY_MAPPING.get(city.lower(), city)
+        country = COUNTRY_MAPPING.get(country.lower(), country)
         
         location = geolocator.geocode(f"{city}, {country}", timeout=10)
         if location:
@@ -81,8 +81,6 @@ def extract_city_data(city):
     personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
     if os.path.exists(personnel_path):
         personnel_df = pd.read_csv(personnel_path, delimiter=';')
-        # Personnel file doesn't have date in filename, use current date
-        personnel_df['extraction_date'] = datetime.now().date()
         city_data['personnel'] = personnel_df
         print(f"{SUCCESS}✓ Successfully extracted personnel data for {city}{RESET}")
     
@@ -94,9 +92,6 @@ def extract_city_data(city):
         informatique_dfs = []
         for file in informatique_files:
             df = pd.read_csv(os.path.join(informatique_dir, file), delimiter=';')
-            # Extract date from filename (format: MATERIEL_INFORMATIQUE_YYYYMMDD.txt)
-            file_date = datetime.strptime(file.split('_')[-1].split('.')[0], '%Y%m%d')
-            df['extraction_date'] = file_date
             informatique_dfs.append(df)
         if informatique_dfs:
             city_data['informatique'] = pd.concat(informatique_dfs, ignore_index=True)
@@ -110,9 +105,6 @@ def extract_city_data(city):
         mission_dfs = []
         for file in mission_files:
             df = pd.read_csv(os.path.join(mission_dir, file), delimiter=';')
-            # Extract date from filename (format: MISSION_YYYYMMDD.txt)
-            file_date = datetime.strptime(file.split('_')[-1].split('.')[0], '%Y%m%d')
-            df['extraction_date'] = file_date
             mission_dfs.append(df)
         if mission_dfs:
             city_data['mission'] = pd.concat(mission_dfs, ignore_index=True)
@@ -134,7 +126,7 @@ def extract_data():
             print(f"{SUCCESS}✓ Successfully completed extraction for {city}{RESET}")
         else:
             print(f"{WARNING}No data found for {city}{RESET}")
-    
+
     print(f"{SUCCESS}✓ Data extraction completed successfully{RESET}")
     return city_data_dict
 
@@ -156,7 +148,6 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'PAYS_DESTINATION': 'DESTINATION_COUNTRY',
         'TRANSPORT': 'TRANSPORT_ID',
         'ALLER_RETOUR': 'IS_ROUND_TRIP',
-        'extraction_date': 'EXTRACTION_DATE'
     })
     
     # Convert date to datetime
@@ -170,6 +161,10 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     # Translate mission types to English
     transformed['MISSION_TYPE_ID'] = transformed['MISSION_TYPE_ID'].str.lower().map(MISSION_TYPE_TRANSLATIONS)
     print(f"{SUCCESS}✓ Mission type translation completed{RESET}")
+
+    # Translate transport types to English
+    transformed['TRANSPORT_ID'] = transformed['TRANSPORT_ID'].str.lower().map(TRANSPORT_TYPE_TRANSLATIONS)
+    print(f"{SUCCESS}✓ Transport type translation completed{RESET}")
     
     # Calculate distances
     print(f"{INFO}Calculating distances between cities...{RESET}")
@@ -183,7 +178,6 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     #     axis=1
     # )
     transformed['DISTANCE_KM'] = 0
-    #! TODO: Calculate distances
 
     print(f"{SUCCESS}✓ Calculated distances for {len(transformed)} missions{RESET}")
     
@@ -200,7 +194,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'TRAVEL_ID', 'EMPLOYEE_ID', 'MISSION_TYPE_ID', 'DEPARTURE_CITY',
         'DEPARTURE_COUNTRY', 'DESTINATION_CITY', 'DESTINATION_COUNTRY',
         'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP',
-        'EMISSIONS_KG_CO2E', 'EXTRACTION_DATE'
+        'EMISSIONS_KG_CO2E'
     ]
     transformed = transformed[required_columns]
     print(f"{SUCCESS}✓ Column selection completed{RESET}")
@@ -258,6 +252,12 @@ def transform_personnel_data(personnel_df: pd.DataFrame) -> pd.DataFrame:
         'TS_MAJ_PPERSONNEL': 'last_update_date'
     })
     
+    # Convert city and country names to lowercase
+    transformed['birth_city'] = transformed['birth_city'].str.lower()
+    transformed['birth_country'] = transformed['birth_country'].str.lower()
+    transformed['current_city'] = transformed['current_city'].str.lower()
+    transformed['current_country'] = transformed['current_country'].str.lower()
+    
     # Convert date to datetime, if the date is not valid, set it to None
     transformed['birth_date'] = pd.to_datetime(transformed['birth_date'], errors='coerce')
     transformed['creation_date'] = pd.to_datetime(transformed['creation_date'], errors='coerce')
@@ -291,6 +291,82 @@ def transform_all_personnel_data(extracted_data: Dict[str, Dict[str, pd.DataFram
         print(f"{WARNING}No personnel data found to transform{RESET}")
         return pd.DataFrame()
 
+def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transform equipment data to match dim_equipment schema
+    """
+    print(f"{INFO}Starting equipment data transformation...{RESET}")
+    
+    # Rename columns to match database schema
+    transformed = equipment_df.rename(columns={
+        'ID_MATERIELINFO': 'equipment_id',
+        'TYPE': 'equipment_type',
+        'MODELE': 'model',
+        'DATE_ACHAT': 'purchase_date',
+    })
+    
+    # We need to get the CO2 impact from materiel_informatique_impact.csv
+    impact_file = os.path.join(BASE_PATH, "materiel_informatique_impact.csv")
+    if os.path.exists(impact_file):
+        impact_df = pd.read_csv(impact_file, delimiter=',')
+        
+        # Create a mapping of model to equipment type
+        model_type_mapping = dict(zip(impact_df['Modèle'], impact_df['Type']))
+        
+        # Fill in missing equipment types based on model
+        missing_types = transformed['equipment_type'].isna() | (transformed['equipment_type'] == ' ')
+        if missing_types.any():
+            print(f"{INFO}Filling in {missing_types.sum()} missing equipment types based on model{RESET}")
+            transformed.loc[missing_types, 'equipment_type'] = transformed.loc[missing_types, 'model'].map(model_type_mapping)
+        
+        # Create a mapping of equipment type to CO2 impact
+        impact_mapping = dict(zip(impact_df['Type'], impact_df['Impact']))
+        # Map the CO2 impact to each equipment
+        transformed['co2_impact_kg'] = transformed['equipment_type'].map(impact_mapping)
+    else:
+        print(f"{WARNING}Equipment impact file not found, setting CO2 impact to 0{RESET}")
+        transformed['co2_impact_kg'] = 0
+    
+    # Convert CO2 impact to decimal
+    transformed['co2_impact_kg'] = pd.to_numeric(transformed['co2_impact_kg'], errors='coerce')
+
+    # Convert purchase date to datetime
+    transformed['purchase_date'] = pd.to_datetime(transformed['purchase_date'], errors='coerce')
+    
+    # Select only the columns we need
+    required_columns = ['equipment_id', 'equipment_type', 'model', 'co2_impact_kg', 'purchase_date']
+    transformed = transformed[required_columns]
+    
+    # Print statistics about filled equipment types
+    filled_count = missing_types.sum() if 'missing_types' in locals() else 0
+    if filled_count > 0:
+        print(f"{SUCCESS}✓ Filled in {filled_count} missing equipment types{RESET}")
+    
+    print(f"{SUCCESS}✓ Equipment data transformation completed{RESET}")
+    return transformed
+
+def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
+    """
+    Transform equipment data from all cities into a single DataFrame
+    """
+    equipment_dfs = []
+    print(f"{INFO}Starting transformation of all equipment data...{RESET}")
+    
+    for city, city_data in extracted_data.items():
+        if 'informatique' in city_data:
+            print(f"{INFO}Transforming equipment data for {city}...{RESET}")
+            transformed_df = transform_equipment_data(city_data['informatique'])
+            equipment_dfs.append(transformed_df)
+            print(f"{SUCCESS}✓ Successfully transformed equipment data for {city}{RESET}")
+    
+    if equipment_dfs:
+        result = pd.concat(equipment_dfs, ignore_index=True)
+        print(f"{SUCCESS}✓ All equipment data transformation completed successfully{RESET}")
+        return result
+    else:
+        print(f"{WARNING}No equipment data found to transform{RESET}")
+        return pd.DataFrame()
+
 def create_db_engine():
     """
     Create a connection to the PostgreSQL database
@@ -317,7 +393,7 @@ def create_db_engine():
         print(f"{ERROR}Error connecting to database: {str(e)}{RESET}")
         raise
 
-def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame):
+def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
     """
     Load data into dimension tables from transformed mission and personnel data
     """
@@ -360,6 +436,9 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     columns={'current_city': 'city', 'current_country': 'country'}
                 )
             ]).drop_duplicates()
+
+            locations['city'] = locations['city'].str.lower()
+            locations['country'] = locations['country'].str.lower()
             
             # Create a dictionary with location_id as key and location data as value
             locations_dict = {i+1: row for i, (_, row) in enumerate(locations.iterrows())}
@@ -376,25 +455,33 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             conn.commit()
             print(f"{SUCCESS}✓ Loaded {len(locations)} locations{RESET}")
 
-            # Load dim_time
-            dates = transformed_missions['DATE_ID'].unique()
+            # Load dim_date_time
+            # Get all unique timestamps from mission dates and equipment purchase dates
+            mission_dates = transformed_missions['DATE_ID'].unique()
+            equipment_dates = transformed_equipment['purchase_date'].unique() if not transformed_equipment.empty else []
             
-            for date in dates:
+            all_dates = pd.to_datetime(pd.concat([pd.Series(mission_dates), pd.Series(equipment_dates)]).unique())
+            
+            for date in all_dates:
                 conn.execute(
                     text("""
-                        INSERT INTO dim_time (date_id, day, month, year)
-                        VALUES (:date, :day, :month, :year)
+                        INSERT INTO dim_date_time (date_id, date, day, month, year, hour, minute, second)
+                        VALUES (:date_id, :date, :day, :month, :year, :hour, :minute, :second)
                         ON CONFLICT (date_id) DO NOTHING
                     """),
                     {
-                        "date": date,
+                        "date_id": date,
+                        "date": date.date(),
                         "day": date.day,
                         "month": date.month,
-                        "year": date.year
+                        "year": date.year,
+                        "hour": date.hour,
+                        "minute": date.minute,
+                        "second": date.second
                     }
                 )
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(dates)} dates{RESET}")
+            print(f"{SUCCESS}✓ Loaded {len(all_dates)} dates{RESET}")
 
             # Load dim_transport
             transport_types = transformed_missions['TRANSPORT_ID'].unique()
@@ -438,42 +525,41 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             if transformed_personnel.empty:
                 print(f"{WARNING}No personnel data found to load{RESET}")
             else:
-                # Create a mapping of city+country to location_id
-                location_mapping = {}
-                for location_id, row in locations_dict.items():
-                    location_mapping[f"{row['city']}_{row['country']}"] = location_id
-
-                # Map birth locations
-                transformed_personnel['birth_location_id'] = transformed_personnel.apply(
-                    lambda row: location_mapping.get(f"{row['birth_city']}_{row['birth_country']}"), 
-                    axis=1
-                )
-
-                # Map current locations
-                transformed_personnel['current_location_id'] = transformed_personnel.apply(
-                    lambda row: location_mapping.get(f"{row['current_city']}_{row['current_country']}"), 
-                    axis=1
-                )
-
                 # Map sector IDs
                 sector_mapping = {row['sector_name']: sector_id for sector_id, row in sectors_dict.items()}
                 transformed_personnel['sector_id'] = transformed_personnel['sector_name'].map(sector_mapping)
 
-                # Convert numeric columns to integers, handling NaN values
-                numeric_columns = ['birth_location_id', 'current_location_id', 'sector_id']
-                for col in numeric_columns:
-                    transformed_personnel[col] = pd.to_numeric(transformed_personnel[col], errors='coerce').astype('Int64')
-
                 conn.execute(
                     text("""
-                        INSERT INTO dim_employee (employee_id, first_name, last_name, birth_date, birth_location_id, social_security_number, phone_country_code, phone_number, address_street_number, address_street_name, address_complement, postal_code, current_location_id, sector_id, creation_date, last_update_date)
-                        VALUES (:employee_id, :first_name, :last_name, :birth_date, :birth_location_id, :social_security_number, :phone_country_code, :phone_number, :address_street_number, :address_street_name, :address_complement, :postal_code, :current_location_id, :sector_id, :creation_date, :last_update_date)
+                        INSERT INTO dim_employee (employee_id, last_name, first_name, birth_date, birth_city, birth_country, 
+                                                social_security_number, phone_country_code, phone_number, address_street_number, 
+                                                address_street_name, address_complement, postal_code, current_city, current_country, 
+                                                sector_id, creation_date, last_update_date)
+                        VALUES (:employee_id, :last_name, :first_name, :birth_date, :birth_city, :birth_country, 
+                                :social_security_number, :phone_country_code, :phone_number, :address_street_number, 
+                                :address_street_name, :address_complement, :postal_code, :current_city, :current_country, 
+                                :sector_id, :creation_date, :last_update_date)
                         ON CONFLICT (employee_id) DO NOTHING
                     """),
                     transformed_personnel.to_dict(orient='records')
                 )
                 conn.commit()
                 print(f"{SUCCESS}✓ Loaded {len(transformed_personnel)} employees{RESET}")
+
+            # Load dim_equipment
+            if transformed_equipment.empty:
+                print(f"{WARNING}No equipment data found to load{RESET}")
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_equipment (equipment_id, equipment_type, model, co2_impact_kg)
+                        VALUES (:equipment_id, :equipment_type, :model, :co2_impact_kg)
+                        ON CONFLICT (equipment_id) DO NOTHING
+                    """),
+                    transformed_equipment.to_dict(orient='records')
+                )
+                conn.commit()
+                print(f"{SUCCESS}✓ Loaded {len(transformed_equipment)} equipment items{RESET}")
 
         # Close the engine
         engine.dispose()
@@ -488,17 +574,17 @@ if __name__ == "__main__":
     
     print("\nExtracting data...")
     data = extract_data()
-    #TODO Need to extract data from equipment
     
     print("\nTransforming mission data...")
     transformed_missions = transform_all_mission_data(data)
 
-    #TODO Need to transform equipment data
-    
     print("\nTransforming personnel data...")
     transformed_personnel = transform_all_personnel_data(data)
 
+    print("\nTransforming equipment data...")
+    transformed_equipment = transform_all_equipment_data(data)
+
     print("\nLoading dimension tables...")
-    load_dimension_tables(transformed_missions, transformed_personnel) # missing dim_equipment and facts tables
+    load_dimension_tables(transformed_missions, transformed_personnel, transformed_equipment)
     
     print(f"\n{SUCCESS}ETL process completed successfully{RESET}")

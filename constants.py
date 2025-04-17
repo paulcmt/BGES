@@ -35,57 +35,65 @@ MISSION_TYPE_TRANSLATIONS = {
 
 # City and country name mappings
 CITY_MAPPING = {
-    'PEKIN': 'Beijing',
-    'NEW-YORK': 'New York',
-    'DUBAI': 'Dubai',
-    'SIDNEY': 'Sydney',
-    'MEXICO': 'Mexico City',
-    'LOSANGELES': 'Los Angeles',
-    'NEWYORK': 'New York'
+    'PEKIN': 'beijing',
+    'NEW-YORK': 'new york',
+    'DUBAI': 'dubai',
+    'SIDNEY': 'sydney',
+    'MEXICO': 'mexico city',
+    'LOSANGELES': 'los angeles',
+    'NEWYORK': 'new york'
 }
 
 COUNTRY_MAPPING = {
-    'Allemagne': 'Germany',
-    'USA': 'United States',
-    'Emirats': 'United Arab Emirates',
-    'Norvège': 'Norway',
-    'Suède': 'Sweden',
-    'Finlande': 'Finland',
-    'Tunisie': 'Tunisia',
-    'Maroc': 'Morocco',
-    'France': 'France',
-    'England': 'United Kingdom',
-    'Japan': 'Japan',
-    'China': 'China',
-    'Brazil': 'Brazil',
-    'Canada': 'Canada',
-    'Australia': 'Australia',
-    'New Zealand': 'New Zealand',
-    'Argentina': 'Argentina',
-    'Colombia': 'Colombia',
-    'Peru': 'Peru',
-    'Algeria': 'Algeria'
+    'allemagne': 'germany',
+    'usa': 'united states',
+    'emirats': 'united arab emirates',
+    'norvège': 'norway',
+    'suède': 'sweden',
+    'finlande': 'finland',
+    'tunisie': 'tunisia',
+    'maroc': 'morocco',
+    'france': 'france',
+    'england': 'united kingdom',
+    'japan': 'japan',
+    'china': 'china',
+    'brazil': 'brazil',
+    'canada': 'canada',
+    'australia': 'australia',
+    'new zealand': 'new zealand',
+    'argentina': 'argentina',
+    'colombia': 'colombia',
+    'peru': 'peru',
+    'algeria': 'algeria'
 }
 
 SECTOR_NAME_TRANSLATIONS = {
     # German to English
-    'Dateningenieur': 'Data Engineer',
-    'Computeringenieur': 'Computer Engineer',
-    'Führungskraft': 'Business Executive',
-    'Ökonom': 'Economist',
-    'Personalleiter': 'HRD',
+    'Dateningenieur': 'data engineer',
+    'Computeringenieur': 'computer engineer',
+    'Führungskraft': 'business executive',
+    'Ökonom': 'economist',
+    'Personalleiter': 'hrd',
     
     # French to English
-    'Ingénieur Data': 'Data Engineer',
-    'Ingénieur Informaticien': 'Computer Engineer',
-    'Cadre': 'Business Executive',
-    'Economiste': 'Economist',
-    'DRH': 'HRD',
+    'Ingénieur Data': 'data engineer',
+    'Ingénieur Informaticien': 'computer engineer',
+    'Cadre': 'business executive',
+    'Economiste': 'economist',
+    'DRH': 'hrd',
 
     # US to English
-    'Data Engineer': 'Data Engineer',
-    'Computer Engineer': 'Computer Engineer',
-    'Business Executive': 'Business Executive',
-    'Economist': 'Economist',
-    'HRD': 'HRD',
+    'Data Engineer': 'data engineer',
+    'Computer Engineer': 'computer engineer',
+    'Business Executive': 'business executive',
+    'Economist': 'economist',
+    'HRD': 'hrd',
+}
+
+TRANSPORT_TYPE_TRANSLATIONS = {
+    # French to English
+    'avion': 'plane',
+    'transports en commun': 'public transport',
+    'train': 'train',
+    'taxi': 'taxi',
 }
