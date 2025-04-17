@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS fact_business_travel (
     date_id TIMESTAMP,
     distance_km DECIMAL(10,2),
     is_round_trip BOOLEAN,
-    emissions_kg_co2e DECIMAL(10,2),
     FOREIGN KEY (employee_id) REFERENCES dim_employee(employee_id),
     FOREIGN KEY (mission_type_id) REFERENCES dim_mission_type(mission_type_id),
     FOREIGN KEY (departure_location_id) REFERENCES dim_location(location_id),

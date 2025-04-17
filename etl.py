@@ -168,33 +168,69 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     
     # Calculate distances
     print(f"{INFO}Calculating distances between cities...{RESET}")
-    # transformed['DISTANCE_KM'] = transformed.apply(
-    #     lambda row: calculate_distance(
-    #         row['DEPARTURE_CITY'],
-    #         row['DEPARTURE_COUNTRY'],
-    #         row['DESTINATION_CITY'],
-    #         row['DESTINATION_COUNTRY']
-    #     ),
-    #     axis=1
-    # )
-    transformed['DISTANCE_KM'] = 0
-
-    print(f"{SUCCESS}✓ Calculated distances for {len(transformed)} missions{RESET}")
+    transformed['DISTANCE_KM'] = transformed.apply(
+        lambda row: calculate_distance(
+            row['DEPARTURE_CITY'],
+            row['DEPARTURE_COUNTRY'],
+            row['DESTINATION_CITY'],
+            row['DESTINATION_COUNTRY']
+        ),
+        axis=1
+    )
+    
+    # Validate distances
+    print(f"{INFO}Validating distances...{RESET}")
+    
+    # Calculate median distances for each transport type
+    median_distances = transformed.groupby('TRANSPORT_ID')['DISTANCE_KM'].median()
+    print(f"{INFO}Median distances by transport type:{RESET}")
+    for transport, median in median_distances.items():
+        print(f"  {transport}: {median:.2f} km")
+    
+    # Handle invalid distances (negative, null, or unrealistic)
+    invalid_count = 0
+    
+    # Define maximum reasonable distances (in km) for each transport type
+    max_distances = {
+        'taxi': 100,  # Typically used for short distances
+        'public transport': 100,  # Typically used for urban/suburban travel
+        'train': 2000,  # Long-distance trains
+        'plane': 20000  # Long-haul flights
+    }
+    
+    for transport_type in transformed['TRANSPORT_ID'].unique():
+        # Get the median distance for this transport type
+        median_distance = median_distances.get(transport_type, 0)
+        
+        # Find invalid records for this transport type
+        invalid_mask = (
+            (transformed['TRANSPORT_ID'] == transport_type) & 
+            (
+                (transformed['DISTANCE_KM'].isna()) |  # Null distances
+                (transformed['DISTANCE_KM'] < 0) |     # Negative distances
+                (transformed['DISTANCE_KM'] > max_distances.get(transport_type, float('inf')))  # Unrealistic distances
+            )
+        )
+        
+        invalid_records = transformed[invalid_mask]
+        if not invalid_records.empty:
+            invalid_count += len(invalid_records)
+            print(f"{WARNING}Found {len(invalid_records)} invalid distances for {transport_type}. Setting to median: {median_distance:.2f} km{RESET}")
+            transformed.loc[invalid_mask, 'DISTANCE_KM'] = median_distance
+    
+    if invalid_count > 0:
+        print(f"{WARNING}Total invalid distances fixed: {invalid_count}{RESET}")
     
     # Double the distance for round trips
     round_trips = transformed['IS_ROUND_TRIP'].sum()
     transformed.loc[transformed['IS_ROUND_TRIP'], 'DISTANCE_KM'] *= 2
     print(f"{SUCCESS}✓ Adjusted distances for {round_trips} round trips{RESET}")
     
-    # Placeholder for emissions (will be implemented later)
-    transformed['EMISSIONS_KG_CO2E'] = 0
-    
     # Select only the columns we need
     required_columns = [
         'TRAVEL_ID', 'EMPLOYEE_ID', 'MISSION_TYPE_ID', 'DEPARTURE_CITY',
         'DEPARTURE_COUNTRY', 'DESTINATION_CITY', 'DESTINATION_COUNTRY',
-        'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP',
-        'EMISSIONS_KG_CO2E'
+        'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP'
     ]
     transformed = transformed[required_columns]
     print(f"{SUCCESS}✓ Column selection completed{RESET}")
@@ -303,6 +339,7 @@ def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
         'TYPE': 'equipment_type',
         'MODELE': 'model',
         'DATE_ACHAT': 'purchase_date',
+        'ID_PERSONNEL': 'employee_id'  # Add employee_id mapping
     })
     
     # We need to get the CO2 impact from materiel_informatique_impact.csv
@@ -329,12 +366,12 @@ def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
     
     # Convert CO2 impact to decimal
     transformed['co2_impact_kg'] = pd.to_numeric(transformed['co2_impact_kg'], errors='coerce')
-
+    
     # Convert purchase date to datetime
     transformed['purchase_date'] = pd.to_datetime(transformed['purchase_date'], errors='coerce')
     
     # Select only the columns we need
-    required_columns = ['equipment_id', 'equipment_type', 'model', 'co2_impact_kg', 'purchase_date']
+    required_columns = ['equipment_id', 'equipment_type', 'model', 'co2_impact_kg', 'purchase_date', 'employee_id']
     transformed = transformed[required_columns]
     
     # Print statistics about filled equipment types
@@ -484,10 +521,21 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             print(f"{SUCCESS}✓ Loaded {len(all_dates)} dates{RESET}")
 
             # Load dim_transport
+            # Read transport factors from the generated file
+            transport_factors = pd.read_csv('data/transport_factors_by_subcategory.tsv', sep='\t')
+            
+            # Create a mapping of transport types to their emission factors
+            transport_mapping = {
+                'taxi': float(transport_factors[transport_factors['subcategory'] == 'taxi']['mean_emissions'].iloc[0]),
+                'plane': float(transport_factors[transport_factors['subcategory'] == 'plane']['mean_emissions'].iloc[0]),
+                'train': float(transport_factors[transport_factors['subcategory'] == 'train']['mean_emissions'].iloc[0]),
+                'public transport': float(transport_factors[transport_factors['subcategory'] == 'public transport']['mean_emissions'].iloc[0])
+            }
+            
             transport_types = transformed_missions['TRANSPORT_ID'].unique()
             
             # Create a dictionary with transport_id as key and transport data as value
-            transport_types_dict = {i+1: {'transport_name': transport} 
+            transport_types_dict = {i+1: {'transport_name': transport, 'emission_factor': transport_mapping.get(transport.lower(), 0.0)} 
                                   for i, transport in enumerate(transport_types)}
             
             for transport_id, row in transport_types_dict.items():
@@ -497,7 +545,7 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                         VALUES (:transport_id, :transport_name, :emission_factor)
                         ON CONFLICT (transport_id) DO NOTHING
                     """),
-                    {"transport_id": transport_id, "transport_name": row['transport_name'], "emission_factor": 0}
+                    {"transport_id": transport_id, "transport_name": row['transport_name'], "emission_factor": float(row['emission_factor'])}
                 )
             conn.commit()
             print(f"{SUCCESS}✓ Loaded {len(transport_types)} transport types with emission factors{RESET}")
@@ -569,6 +617,143 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
         print(f"{ERROR}Error loading dimension tables: {str(e)}{RESET}")
         raise
 
+def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
+    """
+    Load data into fact tables after dimension tables are populated
+    """
+    print(f"{INFO}Starting fact tables loading...{RESET}")
+    
+    try:
+        # Create database engine
+        engine = create_db_engine()
+        
+        with engine.connect() as conn:
+            # First, get all the necessary mappings from dimension tables
+            # Get location mappings
+            locations = pd.read_sql("SELECT location_id, city, country FROM dim_location", conn)
+            location_mapping = {(row['city'].lower(), row['country'].lower()): row['location_id'] 
+                              for _, row in locations.iterrows()}
+            
+            # Get transport mappings
+            transports = pd.read_sql("SELECT transport_id, transport_name FROM dim_transport", conn)
+            transport_mapping = {row['transport_name'].lower(): row['transport_id'] 
+                               for _, row in transports.iterrows()}
+            
+            # Get mission type mappings
+            mission_types = pd.read_sql("SELECT mission_type_id, mission_type_name FROM dim_mission_type", conn)
+            mission_type_mapping = {row['mission_type_name'].lower(): row['mission_type_id'] 
+                                  for _, row in mission_types.iterrows()}
+            
+            # Load fact_business_travel
+            if not transformed_missions.empty:
+                # Map locations
+                transformed_missions['departure_location_id'] = transformed_missions.apply(
+                    lambda row: location_mapping.get((row['DEPARTURE_CITY'].lower(), row['DEPARTURE_COUNTRY'].lower())), 
+                    axis=1
+                )
+                transformed_missions['destination_location_id'] = transformed_missions.apply(
+                    lambda row: location_mapping.get((row['DESTINATION_CITY'].lower(), row['DESTINATION_COUNTRY'].lower())), 
+                    axis=1
+                )
+                
+                # Map transport and mission types
+                transformed_missions['transport_id'] = transformed_missions['TRANSPORT_ID'].str.lower().map(transport_mapping)
+                transformed_missions['mission_type_id'] = transformed_missions['MISSION_TYPE_ID'].str.lower().map(mission_type_mapping)
+                
+                # Insert into fact_business_travel
+                conn.execute(
+                    text("""
+                        INSERT INTO fact_business_travel (
+                            travel_id, employee_id, mission_type_id, departure_location_id,
+                            destination_location_id, transport_id, date_id, distance_km,
+                            is_round_trip
+                        )
+                        VALUES (
+                            :travel_id, :employee_id, :mission_type_id, :departure_location_id,
+                            :destination_location_id, :transport_id, :date_id, :distance_km,
+                            :is_round_trip
+                        )
+                        ON CONFLICT (travel_id) DO NOTHING
+                    """),
+                    transformed_missions.rename(columns={
+                        'TRAVEL_ID': 'travel_id',
+                        'EMPLOYEE_ID': 'employee_id',
+                        'DATE_ID': 'date_id',
+                        'DISTANCE_KM': 'distance_km',
+                        'IS_ROUND_TRIP': 'is_round_trip'
+                    }).to_dict(orient='records')
+                )
+                conn.commit()
+                print(f"{SUCCESS}✓ Loaded {len(transformed_missions)} business travels{RESET}")
+            
+            # Load fact_employee_equipment
+            if not transformed_equipment.empty:
+                # Get employee mappings
+                employees = pd.read_sql("SELECT employee_id FROM dim_employee", conn)
+                employee_mapping = set(employees['employee_id'])
+                
+                # Filter equipment to only those assigned to valid employees
+                valid_equipment = transformed_equipment[transformed_equipment['employee_id'].isin(employee_mapping)]
+                
+                if not valid_equipment.empty:
+                    # Get location information for each employee
+                    employee_locations = pd.read_sql("""
+                        SELECT e.employee_id, e.current_city, e.current_country 
+                        FROM dim_employee e
+                    """, conn)
+                    
+                    # Create a mapping of employee_id to their location
+                    employee_location_mapping = {
+                        row['employee_id']: (row['current_city'].lower(), row['current_country'].lower())
+                        for _, row in employee_locations.iterrows()
+                    }
+                    
+                    # Add location_id to equipment data
+                    valid_equipment['location_id'] = valid_equipment['employee_id'].map(
+                        lambda x: location_mapping.get(employee_location_mapping.get(x, (None, None)))
+                    )
+                    
+                    # Prepare the data for insertion
+                    equipment_data = valid_equipment.rename(columns={
+                        'equipment_id': 'id_materiel',
+                        'purchase_date': 'purchase_date_id'
+                    }).copy()
+                    
+                    # Add equipment_id (same as id_materiel)
+                    equipment_data['equipment_id'] = equipment_data['id_materiel']
+                    
+                    # Select only the required columns
+                    equipment_data = equipment_data[[
+                        'id_materiel', 'equipment_id', 'employee_id', 
+                        'location_id', 'purchase_date_id'
+                    ]]
+                    
+                    # Insert into fact_employee_equipment
+                    conn.execute(
+                        text("""
+                            INSERT INTO fact_employee_equipment (
+                                id_materiel, equipment_id, employee_id, location_id, purchase_date_id
+                            )
+                            VALUES (
+                                :id_materiel, :equipment_id, :employee_id, :location_id, :purchase_date_id
+                            )
+                            ON CONFLICT (id_materiel) DO NOTHING
+                        """),
+                        equipment_data.to_dict(orient='records')
+                    )
+                    conn.commit()
+                    print(f"{SUCCESS}✓ Loaded {len(valid_equipment)} employee equipment assignments{RESET}")
+                else:
+                    print(f"{WARNING}No valid employee equipment assignments found{RESET}")
+            
+        # Close the engine
+        engine.dispose()
+        print(f"{SUCCESS}✓ Database connection closed{RESET}")
+
+    except Exception as e:
+        print(f"{ERROR}Error loading fact tables: {str(e)}{RESET}")
+        raise
+
 if __name__ == "__main__":
     print(f"{INFO}Starting ETL process...{RESET}")
     
@@ -586,5 +771,8 @@ if __name__ == "__main__":
 
     print("\nLoading dimension tables...")
     load_dimension_tables(transformed_missions, transformed_personnel, transformed_equipment)
+    
+    print("\nLoading fact tables...")
+    load_fact_tables(transformed_missions, transformed_personnel, transformed_equipment)
     
     print(f"\n{SUCCESS}ETL process completed successfully{RESET}")
