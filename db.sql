@@ -15,8 +15,7 @@ CREATE TABLE IF NOT EXISTS dim_employee (
     last_name VARCHAR(100),
     first_name VARCHAR(100),
     birth_date DATE,
-    birth_city VARCHAR(100),
-    birth_country VARCHAR(100),
+    birth_location_id INT,
     social_security_number VARCHAR(50),
     phone_country_code VARCHAR(10),
     phone_number VARCHAR(50),
@@ -28,6 +27,7 @@ CREATE TABLE IF NOT EXISTS dim_employee (
     sector_id INT,
     creation_date TIMESTAMP,
     last_update_date TIMESTAMP,
+    FOREIGN KEY (birth_location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (current_location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (sector_id) REFERENCES dim_sector(sector_id)
 );

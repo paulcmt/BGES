@@ -66,3 +66,26 @@ COUNTRY_MAPPING = {
     'Peru': 'Peru',
     'Algeria': 'Algeria'
 }
+
+SECTOR_NAME_TRANSLATIONS = {
+    # German to English
+    'Dateningenieur': 'Data Engineer',
+    'Computeringenieur': 'Computer Engineer',
+    'Führungskraft': 'Business Executive',
+    'Ökonom': 'Economist',
+    'Personalleiter': 'HRD',
+    
+    # French to English
+    'Ingénieur Data': 'Data Engineer',
+    'Ingénieur Informaticien': 'Computer Engineer',
+    'Cadre': 'Business Executive',
+    'Economiste': 'Economist',
+    'DRH': 'HRD',
+
+    # US to English
+    'Data Engineer': 'Data Engineer',
+    'Computer Engineer': 'Computer Engineer',
+    'Business Executive': 'Business Executive',
+    'Economist': 'Economist',
+    'HRD': 'HRD',
+}

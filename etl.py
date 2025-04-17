@@ -2,7 +2,7 @@ import os
 import pandas as pd
 from datetime import datetime
 import psycopg2
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine as sqlalchemy_create_engine
 from typing import Dict, List, Any, Optional, Tuple
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
@@ -11,6 +11,7 @@ import ssl
 import certifi
 import time
 from functools import lru_cache
+from sqlalchemy import text
 
 from constants import *
 
@@ -172,15 +173,18 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     
     # Calculate distances
     print(f"{INFO}Calculating distances between cities...{RESET}")
-    transformed['DISTANCE_KM'] = transformed.apply(
-        lambda row: calculate_distance(
-            row['DEPARTURE_CITY'],
-            row['DEPARTURE_COUNTRY'],
-            row['DESTINATION_CITY'],
-            row['DESTINATION_COUNTRY']
-        ),
-        axis=1
-    )
+    # transformed['DISTANCE_KM'] = transformed.apply(
+    #     lambda row: calculate_distance(
+    #         row['DEPARTURE_CITY'],
+    #         row['DEPARTURE_COUNTRY'],
+    #         row['DESTINATION_CITY'],
+    #         row['DESTINATION_COUNTRY']
+    #     ),
+    #     axis=1
+    # )
+    transformed['DISTANCE_KM'] = 0
+    #! TODO: Calculate distances
+
     print(f"{SUCCESS}✓ Calculated distances for {len(transformed)} missions{RESET}")
     
     # Double the distance for round trips
@@ -226,21 +230,275 @@ def transform_all_mission_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]
         print(f"{WARNING}No mission data found to transform{RESET}")
         return pd.DataFrame()
 
+def transform_personnel_data(personnel_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transform personnel data to match dim_employee schema
+    """
+    print(f"{INFO}Starting personnel data transformation...{RESET}")
+    
+    # Rename columns to match database schema
+    transformed = personnel_df.rename(columns={
+        'ID_PERSONNEL': 'employee_id',
+        'NOM_PERSONNEL': 'last_name',
+        'PRENOM_PERSONNEL': 'first_name',
+        'DT_NAISS': 'birth_date',
+        'VILLE_NAISS': 'birth_city',
+        'PAYS_NAISS': 'birth_country',
+        'NUM_SECU': 'social_security_number',
+        'IND_PAYS_NUM_TELP': 'phone_country_code',
+        'NUM_TELEPHONE': 'phone_number',
+        'NUM_VOIE': 'address_street_number',
+        'DSC_VOIE': 'address_street_name',
+        'CMPL_VOIE': 'address_complement',
+        'CD_POSTAL': 'postal_code',
+        'VILLE': 'current_city',
+        'PAYS': 'current_country',
+        'FONCTION_PERSONNEL': 'sector_name',
+        'TS_CREATION_PERSONNEL': 'creation_date',
+        'TS_MAJ_PPERSONNEL': 'last_update_date'
+    })
+    
+    # Convert date to datetime, if the date is not valid, set it to None
+    transformed['birth_date'] = pd.to_datetime(transformed['birth_date'], errors='coerce')
+    transformed['creation_date'] = pd.to_datetime(transformed['creation_date'], errors='coerce')
+    transformed['last_update_date'] = pd.to_datetime(transformed['last_update_date'], errors='coerce')
+
+    # Need to map the sector_name to the translated sector_name
+    transformed['sector_name'] = transformed['sector_name'].map(SECTOR_NAME_TRANSLATIONS)
+
+    print(f"{SUCCESS}✓ Personnel data transformation completed{RESET}")
+    return transformed
+
+def transform_all_personnel_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
+    """
+    Transform personnel data from all cities into a single DataFrame
+    """
+    personnel_dfs = []
+    print(f"{INFO}Starting transformation of all personnel data...{RESET}")
+    
+    for city, city_data in extracted_data.items():
+        if 'personnel' in city_data:
+            print(f"{INFO}Transforming personnel data for {city}...{RESET}")
+            transformed_df = transform_personnel_data(city_data['personnel'])
+            personnel_dfs.append(transformed_df)
+            print(f"{SUCCESS}✓ Successfully transformed personnel data for {city}{RESET}")
+    
+    if personnel_dfs:
+        result = pd.concat(personnel_dfs, ignore_index=True)
+        print(f"{SUCCESS}✓ All personnel data transformation completed successfully{RESET}")
+        return result
+    else:
+        print(f"{WARNING}No personnel data found to transform{RESET}")
+        return pd.DataFrame()
+
+def create_db_engine():
+    """
+    Create a connection to the PostgreSQL database
+    """
+    try:
+        # Connection parameters
+        db_params = {
+            'dbname': 'postgres',
+            'user': 'postgres',
+            'password': 'postgres',
+            'host': 'localhost',
+            'port': '5432'
+        }
+        
+        # Create SQLAlchemy engine
+        engine = sqlalchemy_create_engine(
+            f"postgresql://{db_params['user']}:{db_params['password']}@{db_params['host']}:{db_params['port']}/{db_params['dbname']}"
+        )
+        
+        print(f"{SUCCESS}✓ Successfully connected to the database{RESET}")
+        return engine
+        
+    except Exception as e:
+        print(f"{ERROR}Error connecting to database: {str(e)}{RESET}")
+        raise
+
+def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame):
+    """
+    Load data into dimension tables from transformed mission and personnel data
+    """
+    print(f"{INFO}Starting dimension tables loading...{RESET}")
+    
+    try:
+        # Create database engine
+        engine = create_db_engine()
+        
+        with engine.connect() as conn:
+            # Load dim_mission_type
+            mission_types = transformed_missions['MISSION_TYPE_ID'].unique()
+            
+            i = 1
+            for mission_type in mission_types:
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_mission_type (mission_type_id, mission_type_name)
+                        VALUES (:mission_type_id, :mission_type_name)
+                        ON CONFLICT (mission_type_id) DO NOTHING
+                    """),
+                    {"mission_type_id": i, "mission_type_name": mission_type}
+                )
+                i += 1
+            conn.commit()
+            print(f"{SUCCESS}✓ Loaded {len(mission_types)} mission types{RESET}")
+
+            # Load dim_location
+            locations = pd.concat([
+                transformed_missions[['DEPARTURE_CITY', 'DEPARTURE_COUNTRY']].rename(
+                    columns={'DEPARTURE_CITY': 'city', 'DEPARTURE_COUNTRY': 'country'}
+                ),
+                transformed_missions[['DESTINATION_CITY', 'DESTINATION_COUNTRY']].rename(
+                    columns={'DESTINATION_CITY': 'city', 'DESTINATION_COUNTRY': 'country'}
+                ),
+                transformed_personnel[['birth_city', 'birth_country']].rename(
+                    columns={'birth_city': 'city', 'birth_country': 'country'}
+                ),
+                transformed_personnel[['current_city', 'current_country']].rename(
+                    columns={'current_city': 'city', 'current_country': 'country'}
+                )
+            ]).drop_duplicates()
+            
+            # Create a dictionary with location_id as key and location data as value
+            locations_dict = {i+1: row for i, (_, row) in enumerate(locations.iterrows())}
+            
+            for location_id, row in locations_dict.items():
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_location (location_id, city, country)
+                        VALUES (:location_id, :city, :country)
+                        ON CONFLICT (location_id) DO NOTHING
+                    """),
+                    {"location_id": location_id, "city": row['city'], "country": row['country']}
+                )
+            conn.commit()
+            print(f"{SUCCESS}✓ Loaded {len(locations)} locations{RESET}")
+
+            # Load dim_time
+            dates = transformed_missions['DATE_ID'].unique()
+            
+            for date in dates:
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_time (date_id, day, month, year)
+                        VALUES (:date, :day, :month, :year)
+                        ON CONFLICT (date_id) DO NOTHING
+                    """),
+                    {
+                        "date": date,
+                        "day": date.day,
+                        "month": date.month,
+                        "year": date.year
+                    }
+                )
+            conn.commit()
+            print(f"{SUCCESS}✓ Loaded {len(dates)} dates{RESET}")
+
+            # Load dim_transport
+            transport_types = transformed_missions['TRANSPORT_ID'].unique()
+            
+            # Create a dictionary with transport_id as key and transport data as value
+            transport_types_dict = {i+1: {'transport_name': transport} 
+                                  for i, transport in enumerate(transport_types)}
+            
+            for transport_id, row in transport_types_dict.items():
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_transport (transport_id, transport_name, emission_factor)
+                        VALUES (:transport_id, :transport_name, :emission_factor)
+                        ON CONFLICT (transport_id) DO NOTHING
+                    """),
+                    {"transport_id": transport_id, "transport_name": row['transport_name'], "emission_factor": 0}
+                )
+            conn.commit()
+            print(f"{SUCCESS}✓ Loaded {len(transport_types)} transport types with emission factors{RESET}")
+
+            # Load dim_sector
+            sectors = transformed_personnel['sector_name'].unique()
+
+            # Create a dictionary with sector_id as key and sector data as value
+            sectors_dict = {i+1: {'sector_name': sector} 
+                          for i, sector in enumerate(sectors)}
+            
+            for sector_id, row in sectors_dict.items():
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_sector (sector_id, sector_name)
+                        VALUES (:sector_id, :sector_name)
+                        ON CONFLICT (sector_id) DO NOTHING
+                    """),
+                    {"sector_id": sector_id, "sector_name": row['sector_name']}
+                )
+            conn.commit()
+            print(f"{SUCCESS}✓ Loaded {len(sectors)} sectors{RESET}")
+
+            # Load dim_employee
+            if transformed_personnel.empty:
+                print(f"{WARNING}No personnel data found to load{RESET}")
+            else:
+                # Create a mapping of city+country to location_id
+                location_mapping = {}
+                for location_id, row in locations_dict.items():
+                    location_mapping[f"{row['city']}_{row['country']}"] = location_id
+
+                # Map birth locations
+                transformed_personnel['birth_location_id'] = transformed_personnel.apply(
+                    lambda row: location_mapping.get(f"{row['birth_city']}_{row['birth_country']}"), 
+                    axis=1
+                )
+
+                # Map current locations
+                transformed_personnel['current_location_id'] = transformed_personnel.apply(
+                    lambda row: location_mapping.get(f"{row['current_city']}_{row['current_country']}"), 
+                    axis=1
+                )
+
+                # Map sector IDs
+                sector_mapping = {row['sector_name']: sector_id for sector_id, row in sectors_dict.items()}
+                transformed_personnel['sector_id'] = transformed_personnel['sector_name'].map(sector_mapping)
+
+                # Convert numeric columns to integers, handling NaN values
+                numeric_columns = ['birth_location_id', 'current_location_id', 'sector_id']
+                for col in numeric_columns:
+                    transformed_personnel[col] = pd.to_numeric(transformed_personnel[col], errors='coerce').astype('Int64')
+
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_employee (employee_id, first_name, last_name, birth_date, birth_location_id, social_security_number, phone_country_code, phone_number, address_street_number, address_street_name, address_complement, postal_code, current_location_id, sector_id, creation_date, last_update_date)
+                        VALUES (:employee_id, :first_name, :last_name, :birth_date, :birth_location_id, :social_security_number, :phone_country_code, :phone_number, :address_street_number, :address_street_name, :address_complement, :postal_code, :current_location_id, :sector_id, :creation_date, :last_update_date)
+                        ON CONFLICT (employee_id) DO NOTHING
+                    """),
+                    transformed_personnel.to_dict(orient='records')
+                )
+                conn.commit()
+                print(f"{SUCCESS}✓ Loaded {len(transformed_personnel)} employees{RESET}")
+
+        # Close the engine
+        engine.dispose()
+        print(f"{SUCCESS}✓ Database connection closed{RESET}")
+
+    except Exception as e:
+        print(f"{ERROR}Error loading dimension tables: {str(e)}{RESET}")
+        raise
+
 if __name__ == "__main__":
-    # Test the extraction and transformation
     print(f"{INFO}Starting ETL process...{RESET}")
+    
     print("\nExtracting data...")
     data = extract_data()
+    #TODO Need to extract data from equipment
     
     print("\nTransforming mission data...")
     transformed_missions = transform_all_mission_data(data)
+
+    #TODO Need to transform equipment data
+    
+    print("\nTransforming personnel data...")
+    transformed_personnel = transform_all_personnel_data(data)
+
+    print("\nLoading dimension tables...")
+    load_dimension_tables(transformed_missions, transformed_personnel) # missing dim_equipment and facts tables
     
     print(f"\n{SUCCESS}ETL process completed successfully{RESET}")
-    print("\nTransformed mission data summary:")
-    print(f"Total number of missions: {len(transformed_missions)}")
-    print("\nFirst few rows of transformed data:")
-    print(transformed_missions.head())
-    # some stats about the data
-    print(f"Total number of missions: {len(transformed_missions)}")
-    print(f"Total number of unique employees: {transformed_missions['EMPLOYEE_ID'].nunique()}")
-    print(f"Total number of round trips: {transformed_missions['IS_ROUND_TRIP'].sum()}")
