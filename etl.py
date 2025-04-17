@@ -134,8 +134,6 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     """
     Transform mission data to match fact_business_travel schema
     """
-    print(f"{INFO}Starting mission data transformation...{RESET}")
-    
     # Rename columns to match database schema
     transformed = mission_df.rename(columns={
         'ID_MISSION': 'TRAVEL_ID',
@@ -152,22 +150,17 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     
     # Convert date to datetime
     transformed['DATE_ID'] = pd.to_datetime(transformed['DATE_ID'])
-    print(f"{SUCCESS}✓ Date conversion completed{RESET}")
     
     # Convert boolean values
     transformed['IS_ROUND_TRIP'] = transformed['IS_ROUND_TRIP'].map({'oui': True, 'non': False})
-    print(f"{SUCCESS}✓ Boolean conversion completed{RESET}")
     
     # Translate mission types to English
     transformed['MISSION_TYPE_ID'] = transformed['MISSION_TYPE_ID'].str.lower().map(MISSION_TYPE_TRANSLATIONS)
-    print(f"{SUCCESS}✓ Mission type translation completed{RESET}")
 
     # Translate transport types to English
     transformed['TRANSPORT_ID'] = transformed['TRANSPORT_ID'].str.lower().map(TRANSPORT_TYPE_TRANSLATIONS)
-    print(f"{SUCCESS}✓ Transport type translation completed{RESET}")
     
     # Calculate distances
-    print(f"{INFO}Calculating distances between cities...{RESET}")
     transformed['DISTANCE_KM'] = transformed.apply(
         lambda row: calculate_distance(
             row['DEPARTURE_CITY'],
@@ -179,13 +172,8 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     )
     
     # Validate distances
-    print(f"{INFO}Validating distances...{RESET}")
-    
     # Calculate median distances for each transport type
     median_distances = transformed.groupby('TRANSPORT_ID')['DISTANCE_KM'].median()
-    print(f"{INFO}Median distances by transport type:{RESET}")
-    for transport, median in median_distances.items():
-        print(f"  {transport}: {median:.2f} km")
     
     # Handle invalid distances (negative, null, or unrealistic)
     invalid_count = 0
@@ -215,16 +203,14 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         invalid_records = transformed[invalid_mask]
         if not invalid_records.empty:
             invalid_count += len(invalid_records)
-            print(f"{WARNING}Found {len(invalid_records)} invalid distances for {transport_type}. Setting to median: {median_distance:.2f} km{RESET}")
             transformed.loc[invalid_mask, 'DISTANCE_KM'] = median_distance
     
     if invalid_count > 0:
-        print(f"{WARNING}Total invalid distances fixed: {invalid_count}{RESET}")
+        print(f"{WARNING}Fixed {invalid_count} invalid distances using median values{RESET}")
     
     # Double the distance for round trips
     round_trips = transformed['IS_ROUND_TRIP'].sum()
     transformed.loc[transformed['IS_ROUND_TRIP'], 'DISTANCE_KM'] *= 2
-    print(f"{SUCCESS}✓ Adjusted distances for {round_trips} round trips{RESET}")
     
     # Select only the columns we need
     required_columns = [
@@ -233,9 +219,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         'TRANSPORT_ID', 'DATE_ID', 'DISTANCE_KM', 'IS_ROUND_TRIP'
     ]
     transformed = transformed[required_columns]
-    print(f"{SUCCESS}✓ Column selection completed{RESET}")
     
-    print(f"{SUCCESS}✓ Mission data transformation completed successfully{RESET}")
     return transformed
 
 def transform_all_mission_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
@@ -434,8 +418,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
     """
     Load data into dimension tables from transformed mission and personnel data
     """
-    print(f"{INFO}Starting dimension tables loading...{RESET}")
-    
     try:
         # Create database engine
         engine = create_db_engine()
@@ -443,9 +425,7 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
         with engine.connect() as conn:
             # Load dim_mission_type
             mission_types = transformed_missions['MISSION_TYPE_ID'].unique()
-            
-            i = 1
-            for mission_type in mission_types:
+            for i, mission_type in enumerate(mission_types, 1):
                 conn.execute(
                     text("""
                         INSERT INTO dim_mission_type (mission_type_id, mission_type_name)
@@ -454,9 +434,8 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     """),
                     {"mission_type_id": i, "mission_type_name": mission_type}
                 )
-                i += 1
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(mission_types)} mission types{RESET}")
+            print(f"{SUCCESS}Loaded {len(mission_types)} mission types{RESET}")
 
             # Load dim_location
             locations = pd.concat([
@@ -477,26 +456,21 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             locations['city'] = locations['city'].str.lower()
             locations['country'] = locations['country'].str.lower()
             
-            # Create a dictionary with location_id as key and location data as value
-            locations_dict = {i+1: row for i, (_, row) in enumerate(locations.iterrows())}
-            
-            for location_id, row in locations_dict.items():
+            for i, (_, row) in enumerate(locations.iterrows(), 1):
                 conn.execute(
                     text("""
                         INSERT INTO dim_location (location_id, city, country)
                         VALUES (:location_id, :city, :country)
                         ON CONFLICT (location_id) DO NOTHING
                     """),
-                    {"location_id": location_id, "city": row['city'], "country": row['country']}
+                    {"location_id": i, "city": row['city'], "country": row['country']}
                 )
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(locations)} locations{RESET}")
+            print(f"{SUCCESS}Loaded {len(locations)} locations{RESET}")
 
             # Load dim_date_time
-            # Get all unique timestamps from mission dates and equipment purchase dates
             mission_dates = transformed_missions['DATE_ID'].unique()
             equipment_dates = transformed_equipment['purchase_date'].unique() if not transformed_equipment.empty else []
-            
             all_dates = pd.to_datetime(pd.concat([pd.Series(mission_dates), pd.Series(equipment_dates)]).unique())
             
             for date in all_dates:
@@ -518,13 +492,10 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     }
                 )
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(all_dates)} dates{RESET}")
+            print(f"{SUCCESS}Loaded {len(all_dates)} dates{RESET}")
 
             # Load dim_transport
-            # Read transport factors from the generated file
             transport_factors = pd.read_csv('data/transport_factors_by_subcategory.tsv', sep='\t')
-            
-            # Create a mapping of transport types to their emission factors
             transport_mapping = {
                 'taxi': float(transport_factors[transport_factors['subcategory'] == 'taxi']['mean_emissions'].iloc[0]),
                 'plane': float(transport_factors[transport_factors['subcategory'] == 'plane']['mean_emissions'].iloc[0]),
@@ -533,48 +504,36 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             }
             
             transport_types = transformed_missions['TRANSPORT_ID'].unique()
-            
-            # Create a dictionary with transport_id as key and transport data as value
-            transport_types_dict = {i+1: {'transport_name': transport, 'emission_factor': transport_mapping.get(transport.lower(), 0.0)} 
-                                  for i, transport in enumerate(transport_types)}
-            
-            for transport_id, row in transport_types_dict.items():
+            for i, transport in enumerate(transport_types, 1):
                 conn.execute(
                     text("""
                         INSERT INTO dim_transport (transport_id, transport_name, emission_factor)
                         VALUES (:transport_id, :transport_name, :emission_factor)
                         ON CONFLICT (transport_id) DO NOTHING
                     """),
-                    {"transport_id": transport_id, "transport_name": row['transport_name'], "emission_factor": float(row['emission_factor'])}
+                    {"transport_id": i, "transport_name": transport, "emission_factor": transport_mapping.get(transport.lower(), 0.0)}
                 )
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(transport_types)} transport types with emission factors{RESET}")
+            print(f"{SUCCESS}Loaded {len(transport_types)} transport types{RESET}")
 
             # Load dim_sector
             sectors = transformed_personnel['sector_name'].unique()
-
-            # Create a dictionary with sector_id as key and sector data as value
-            sectors_dict = {i+1: {'sector_name': sector} 
-                          for i, sector in enumerate(sectors)}
-            
-            for sector_id, row in sectors_dict.items():
+            for i, sector in enumerate(sectors, 1):
                 conn.execute(
                     text("""
                         INSERT INTO dim_sector (sector_id, sector_name)
                         VALUES (:sector_id, :sector_name)
                         ON CONFLICT (sector_id) DO NOTHING
                     """),
-                    {"sector_id": sector_id, "sector_name": row['sector_name']}
+                    {"sector_id": i, "sector_name": sector}
                 )
             conn.commit()
-            print(f"{SUCCESS}✓ Loaded {len(sectors)} sectors{RESET}")
+            print(f"{SUCCESS}Loaded {len(sectors)} sectors{RESET}")
 
             # Load dim_employee
-            if transformed_personnel.empty:
-                print(f"{WARNING}No personnel data found to load{RESET}")
-            else:
-                # Map sector IDs
-                sector_mapping = {row['sector_name']: sector_id for sector_id, row in sectors_dict.items()}
+            if not transformed_personnel.empty:
+                # Create sector mapping using the same index as when we loaded sectors
+                sector_mapping = {sector: i+1 for i, sector in enumerate(sectors)}
                 transformed_personnel['sector_id'] = transformed_personnel['sector_name'].map(sector_mapping)
 
                 conn.execute(
@@ -592,12 +551,10 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     transformed_personnel.to_dict(orient='records')
                 )
                 conn.commit()
-                print(f"{SUCCESS}✓ Loaded {len(transformed_personnel)} employees{RESET}")
+                print(f"{SUCCESS}Loaded {len(transformed_personnel)} employees{RESET}")
 
             # Load dim_equipment
-            if transformed_equipment.empty:
-                print(f"{WARNING}No equipment data found to load{RESET}")
-            else:
+            if not transformed_equipment.empty:
                 conn.execute(
                     text("""
                         INSERT INTO dim_equipment (equipment_id, equipment_type, model, co2_impact_kg)
@@ -607,11 +564,11 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     transformed_equipment.to_dict(orient='records')
                 )
                 conn.commit()
-                print(f"{SUCCESS}✓ Loaded {len(transformed_equipment)} equipment items{RESET}")
+                print(f"{SUCCESS}Loaded {len(transformed_equipment)} equipment items{RESET}")
 
         # Close the engine
         engine.dispose()
-        print(f"{SUCCESS}✓ Database connection closed{RESET}")
+        print(f"{SUCCESS}Dimension tables loaded successfully{RESET}")
 
     except Exception as e:
         print(f"{ERROR}Error loading dimension tables: {str(e)}{RESET}")
