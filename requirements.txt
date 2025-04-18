@@ -7,3 +7,5 @@ sqlalchemy
 psycopg2-binary
 geopy
 certifi
+matplotlib
+seaborn
