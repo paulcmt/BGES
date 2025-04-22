@@ -23,6 +23,10 @@ ctx = ssl.create_default_context(cafile=certifi.where())
 ctx.verify_mode = ssl.CERT_REQUIRED
 geolocator = Nominatim(user_agent="bges_etl", ssl_context=ctx)
 
+def print_message(message, color=INFO):
+    """Helper function to print messages with color"""
+    print(f"{color}{message}{RESET}")
+
 # Cache for city coordinates
 @lru_cache(maxsize=1000)
 def get_city_coordinates(city: str, country: str) -> Optional[Tuple[float, float]]:
@@ -38,13 +42,13 @@ def get_city_coordinates(city: str, country: str) -> Optional[Tuple[float, float
         if location:
             return (location.latitude, location.longitude)
         else:
-            print(f"Could not find coordinates for {city}, {country}")
+            print_message(f"Could not find coordinates for {city}, {country}", WARNING)
             return None
     except GeocoderTimedOut:
-        print(f"Timeout getting coordinates for {city}, {country}")
+        print_message(f"Timeout getting coordinates for {city}, {country}", WARNING)
         return None
     except Exception as e:
-        print(f"Error getting coordinates for {city}, {country}: {str(e)}")
+        print_message(f"Error getting coordinates for {city}, {country}: {str(e)}", ERROR)
         return None
 
 def calculate_distance(departure_city: str, departure_country: str,
@@ -72,66 +76,54 @@ def calculate_distance(departure_city: str, departure_country: str,
         distance = geodesic(departure_coords, destination_coords).kilometers
         return round(distance, 2)
     else:
-        print(f"Could not calculate distance between {departure_city} and {destination_city}")
+        print_message(f"Could not calculate distance between {departure_city} and {destination_city}", WARNING)
         return 0.0
 
-def extract_city_data(city):
+def extract_city_data(city, date):
     """
-    Extract data for a specific city from all relevant files
+    Extract data for a specific city and date
     """
     city_data = {}
+    date_str = date.strftime('%Y%m%d')
     
     # Extract personnel data
     personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
     if os.path.exists(personnel_path):
         personnel_df = pd.read_csv(personnel_path, delimiter=';')
         city_data['personnel'] = personnel_df
-        print(f"{SUCCESS}✓ Successfully extracted personnel data for {city}{RESET}")
     
     # Extract informatique data
     informatique_dir = f"{BASE_PATH}/BDD_BGES_{city}/BDD_BGES_{city}_INFORMATIQUE"
     if os.path.exists(informatique_dir):
         informatique_files = [f for f in os.listdir(informatique_dir) 
-                            if f.startswith('MATERIEL_INFORMATIQUE_') and f.endswith('.txt')]
-        informatique_dfs = []
-        for file in informatique_files:
-            df = pd.read_csv(os.path.join(informatique_dir, file), delimiter=';')
-            informatique_dfs.append(df)
-        if informatique_dfs:
-            city_data['informatique'] = pd.concat(informatique_dfs, ignore_index=True)
-            print(f"{SUCCESS}✓ Successfully extracted informatique data for {city} from {len(informatique_files)} files{RESET}")
+                            if f.startswith('MATERIEL_INFORMATIQUE_') and f.endswith(f'{date_str}.txt')]
+        if informatique_files:
+            df = pd.read_csv(os.path.join(informatique_dir, informatique_files[0]), delimiter=';')
+            city_data['informatique'] = df
     
     # Extract mission data
     mission_dir = f"{BASE_PATH}/BDD_BGES_{city}/BDD_BGES_{city}_MISSION"
     if os.path.exists(mission_dir):
         mission_files = [f for f in os.listdir(mission_dir) 
-                        if f.startswith('MISSION_') and f.endswith('.txt')]
-        mission_dfs = []
-        for file in mission_files:
-            df = pd.read_csv(os.path.join(mission_dir, file), delimiter=';')
-            mission_dfs.append(df)
-        if mission_dfs:
-            city_data['mission'] = pd.concat(mission_dfs, ignore_index=True)
-            print(f"{SUCCESS}✓ Successfully extracted mission data for {city} from {len(mission_files)} files{RESET}")
+                        if f.startswith('MISSION_') and f.endswith(f'{date_str}.txt')]
+        if mission_files:
+            df = pd.read_csv(os.path.join(mission_dir, mission_files[0]), delimiter=';')
+            city_data['mission'] = df
     
     return city_data
 
-def extract_data():
+def extract_data_for_date(date):
     """
-    Extract data for all cities
+    Extract data for all cities for a specific date
     """
     city_data_dict = {}
-    print(f"{INFO}Starting data extraction for all cities...{RESET}")
+    date_str = date.strftime('%Y-%m-%d')
+    
     for city in CITIES:
-        print(f"{INFO}Extracting data for {city}...{RESET}")
-        city_data = extract_city_data(city)
+        city_data = extract_city_data(city, date)
         if city_data:
             city_data_dict[city] = city_data
-            print(f"{SUCCESS}✓ Successfully completed extraction for {city}{RESET}")
-        else:
-            print(f"{WARNING}No data found for {city}{RESET}")
 
-    print(f"{SUCCESS}✓ Data extraction completed successfully{RESET}")
     return city_data_dict
 
 def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
@@ -210,7 +202,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
             transformed.loc[invalid_mask, 'DISTANCE_KM'] = median_distance
     
     if invalid_count > 0:
-        print(f"{WARNING}Fixed {invalid_count} invalid distances using median values{RESET}")
+        print_message(f"{WARNING}Fixed {invalid_count} invalid distances using median values{RESET}")
     
     # Double the distance for round trips
     round_trips = transformed['IS_ROUND_TRIP'].sum()
@@ -231,29 +223,22 @@ def transform_all_mission_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]
     Transform mission data from all cities into a single DataFrame
     """
     mission_dfs = []
-    print(f"{INFO}Starting transformation of all mission data...{RESET}")
     
     for city, city_data in extracted_data.items():
         if 'mission' in city_data:
-            print(f"{INFO}Transforming mission data for {city}...{RESET}")
             transformed_df = transform_mission_data(city_data['mission'])
             mission_dfs.append(transformed_df)
-            print(f"{SUCCESS}✓ Successfully transformed mission data for {city}{RESET}")
     
     if mission_dfs:
         result = pd.concat(mission_dfs, ignore_index=True)
-        print(f"{SUCCESS}✓ All mission data transformation completed successfully{RESET}")
         return result
     else:
-        print(f"{WARNING}No mission data found to transform{RESET}")
         return pd.DataFrame()
 
 def transform_personnel_data(personnel_df: pd.DataFrame) -> pd.DataFrame:
     """
     Transform personnel data to match dim_employee schema
     """
-    print(f"{INFO}Starting personnel data transformation...{RESET}")
-    
     # Rename columns to match database schema
     transformed = personnel_df.rename(columns={
         'ID_PERSONNEL': 'employee_id',
@@ -290,7 +275,6 @@ def transform_personnel_data(personnel_df: pd.DataFrame) -> pd.DataFrame:
     # Need to map the sector_name to the translated sector_name
     transformed['sector_name'] = transformed['sector_name'].map(SECTOR_NAME_TRANSLATIONS)
 
-    print(f"{SUCCESS}✓ Personnel data transformation completed{RESET}")
     return transformed
 
 def transform_all_personnel_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
@@ -298,29 +282,22 @@ def transform_all_personnel_data(extracted_data: Dict[str, Dict[str, pd.DataFram
     Transform personnel data from all cities into a single DataFrame
     """
     personnel_dfs = []
-    print(f"{INFO}Starting transformation of all personnel data...{RESET}")
     
     for city, city_data in extracted_data.items():
         if 'personnel' in city_data:
-            print(f"{INFO}Transforming personnel data for {city}...{RESET}")
             transformed_df = transform_personnel_data(city_data['personnel'])
             personnel_dfs.append(transformed_df)
-            print(f"{SUCCESS}✓ Successfully transformed personnel data for {city}{RESET}")
     
     if personnel_dfs:
         result = pd.concat(personnel_dfs, ignore_index=True)
-        print(f"{SUCCESS}✓ All personnel data transformation completed successfully{RESET}")
         return result
     else:
-        print(f"{WARNING}No personnel data found to transform{RESET}")
         return pd.DataFrame()
 
 def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
     """
     Transform equipment data to match dim_equipment schema
     """
-    print(f"{INFO}Starting equipment data transformation...{RESET}")
-    
     # Rename columns to match database schema
     transformed = equipment_df.rename(columns={
         'ID_MATERIELINFO': 'equipment_id',
@@ -341,7 +318,6 @@ def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
         # Fill in missing equipment types based on model
         missing_types = transformed['equipment_type'].isna() | (transformed['equipment_type'] == ' ')
         if missing_types.any():
-            print(f"{INFO}Filling in {missing_types.sum()} missing equipment types based on model{RESET}")
             transformed.loc[missing_types, 'equipment_type'] = transformed.loc[missing_types, 'model'].map(model_type_mapping)
         
         # Create a mapping of equipment type to CO2 impact
@@ -349,7 +325,6 @@ def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
         # Map the CO2 impact to each equipment
         transformed['co2_impact_kg'] = transformed['equipment_type'].map(impact_mapping)
     else:
-        print(f"{WARNING}Equipment impact file not found, setting CO2 impact to 0{RESET}")
         transformed['co2_impact_kg'] = 0
     
     # Convert CO2 impact to decimal
@@ -362,12 +337,6 @@ def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
     required_columns = ['equipment_id', 'equipment_type', 'model', 'co2_impact_kg', 'purchase_date', 'employee_id']
     transformed = transformed[required_columns]
     
-    # Print statistics about filled equipment types
-    filled_count = missing_types.sum() if 'missing_types' in locals() else 0
-    if filled_count > 0:
-        print(f"{SUCCESS}✓ Filled in {filled_count} missing equipment types{RESET}")
-    
-    print(f"{SUCCESS}✓ Equipment data transformation completed{RESET}")
     return transformed
 
 def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
@@ -375,21 +344,16 @@ def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFram
     Transform equipment data from all cities into a single DataFrame
     """
     equipment_dfs = []
-    print(f"{INFO}Starting transformation of all equipment data...{RESET}")
     
     for city, city_data in extracted_data.items():
         if 'informatique' in city_data:
-            print(f"{INFO}Transforming equipment data for {city}...{RESET}")
             transformed_df = transform_equipment_data(city_data['informatique'])
             equipment_dfs.append(transformed_df)
-            print(f"{SUCCESS}✓ Successfully transformed equipment data for {city}{RESET}")
     
     if equipment_dfs:
         result = pd.concat(equipment_dfs, ignore_index=True)
-        print(f"{SUCCESS}✓ All equipment data transformation completed successfully{RESET}")
         return result
     else:
-        print(f"{WARNING}No equipment data found to transform{RESET}")
         return pd.DataFrame()
 
 def create_db_engine():
@@ -411,11 +375,10 @@ def create_db_engine():
             f"postgresql://{db_params['user']}:{db_params['password']}@{db_params['host']}:{db_params['port']}/{db_params['dbname']}"
         )
         
-        print(f"{SUCCESS}✓ Successfully connected to the database{RESET}")
         return engine
         
     except Exception as e:
-        print(f"{ERROR}Error connecting to database: {str(e)}{RESET}")
+        print_message(f"Error connecting to database: {str(e)}", ERROR)
         raise
 
 def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
@@ -439,7 +402,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     {"mission_type_id": i, "mission_type_name": mission_type}
                 )
             conn.commit()
-            print(f"{SUCCESS}Loaded {len(mission_types)} mission types{RESET}")
 
             # Load dim_location
             locations = pd.concat([
@@ -470,7 +432,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     {"location_id": i, "city": row['city'], "country": row['country']}
                 )
             conn.commit()
-            print(f"{SUCCESS}Loaded {len(locations)} locations{RESET}")
 
             # Load dim_date_time
             mission_dates = transformed_missions['DATE_ID'].unique()
@@ -496,7 +457,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     }
                 )
             conn.commit()
-            print(f"{SUCCESS}Loaded {len(all_dates)} dates{RESET}")
 
             # Load dim_transport
             transport_factors = pd.read_csv('data/transport_factors_by_subcategory.tsv', sep='\t')
@@ -518,7 +478,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     {"transport_id": i, "transport_name": transport, "emission_factor": transport_mapping.get(transport.lower(), 0.0)}
                 )
             conn.commit()
-            print(f"{SUCCESS}Loaded {len(transport_types)} transport types{RESET}")
 
             # Load dim_sector
             sectors = transformed_personnel['sector_name'].unique()
@@ -532,7 +491,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     {"sector_id": i, "sector_name": sector}
                 )
             conn.commit()
-            print(f"{SUCCESS}Loaded {len(sectors)} sectors{RESET}")
 
             # Load dim_employee
             if not transformed_personnel.empty:
@@ -555,7 +513,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     transformed_personnel.to_dict(orient='records')
                 )
                 conn.commit()
-                print(f"{SUCCESS}Loaded {len(transformed_personnel)} employees{RESET}")
 
             # Load dim_equipment
             if not transformed_equipment.empty:
@@ -568,22 +525,18 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                     transformed_equipment.to_dict(orient='records')
                 )
                 conn.commit()
-                print(f"{SUCCESS}Loaded {len(transformed_equipment)} equipment items{RESET}")
 
         # Close the engine
         engine.dispose()
-        print(f"{SUCCESS}Dimension tables loaded successfully{RESET}")
 
     except Exception as e:
-        print(f"{ERROR}Error loading dimension tables: {str(e)}{RESET}")
+        print_message(f"Error loading dimension tables: {str(e)}", ERROR)
         raise
 
 def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
     """
     Load data into fact tables after dimension tables are populated
     """
-    print(f"{INFO}Starting fact tables loading...{RESET}")
-    
     try:
         # Create database engine
         engine = create_db_engine()
@@ -645,7 +598,6 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
                     }).to_dict(orient='records')
                 )
                 conn.commit()
-                print(f"{SUCCESS}✓ Loaded {len(transformed_missions)} business travels{RESET}")
             
             # Load fact_employee_equipment
             if not transformed_equipment.empty:
@@ -703,37 +655,65 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
                         equipment_data.to_dict(orient='records')
                     )
                     conn.commit()
-                    print(f"{SUCCESS}✓ Loaded {len(valid_equipment)} employee equipment assignments{RESET}")
-                else:
-                    print(f"{WARNING}No valid employee equipment assignments found{RESET}")
             
         # Close the engine
         engine.dispose()
-        print(f"{SUCCESS}✓ Database connection closed{RESET}")
 
     except Exception as e:
-        print(f"{ERROR}Error loading fact tables: {str(e)}{RESET}")
+        print_message(f"Error loading fact tables: {str(e)}", ERROR)
+        raise
+
+def process_date(date):
+    """
+    Process ETL for a specific date
+    """
+    date_str = date.strftime('%Y-%m-%d')
+    print_message(f"Analyzing {date_str}")
+    start_time = time.time()
+    
+    try:
+        # Extract data
+        data = extract_data_for_date(date)
+        
+        # Transform data
+        transformed_missions = transform_all_mission_data(data)
+        transformed_personnel = transform_all_personnel_data(data)
+        transformed_equipment = transform_all_equipment_data(data)
+
+        # Load data
+        load_dimension_tables(transformed_missions, transformed_personnel, transformed_equipment)
+        load_fact_tables(transformed_missions, transformed_personnel, transformed_equipment)
+        
+        elapsed_time = time.time() - start_time
+        print_message(f"✓ {date_str} ETL completed in {elapsed_time:.2f}s", SUCCESS)
+        
+    except Exception as e:
+        print_message(f"Error processing {date_str}: {str(e)}", ERROR)
         raise
 
 if __name__ == "__main__":
-    print(f"{INFO}Starting ETL process...{RESET}")
+    print_message("Starting ETL process")
     
-    print("\nExtracting data...")
-    data = extract_data()
+    # Get list of dates from mission files
+    mission_dates = set()
     
-    print("\nTransforming mission data...")
-    transformed_missions = transform_all_mission_data(data)
-
-    print("\nTransforming personnel data...")
-    transformed_personnel = transform_all_personnel_data(data)
-
-    print("\nTransforming equipment data...")
-    transformed_equipment = transform_all_equipment_data(data)
-
-    print("\nLoading dimension tables...")
-    load_dimension_tables(transformed_missions, transformed_personnel, transformed_equipment)
+    for city in CITIES:
+        mission_dir = f"{BASE_PATH}/BDD_BGES_{city}/BDD_BGES_{city}_MISSION"
+        if os.path.exists(mission_dir):
+            for file in os.listdir(mission_dir):
+                if file.startswith('MISSION_') and file.endswith('.txt'):
+                    try:
+                        date_str = file.split('_')[-1].replace('.txt', '')
+                        date = datetime.strptime(date_str, '%Y%m%d')
+                        mission_dates.add(date)
+                    except ValueError:
+                        continue
     
-    print("\nLoading fact tables...")
-    load_fact_tables(transformed_missions, transformed_personnel, transformed_equipment)
+    total_dates = len(mission_dates)
+    print_message(f"Found {total_dates} dates to process")
     
-    print(f"\n{SUCCESS}ETL process completed successfully{RESET}")
+    # Process each date
+    for i, date in enumerate(sorted(mission_dates), 1):
+        process_date(date)
+    
+    print_message("ETL process completed for all dates", SUCCESS)

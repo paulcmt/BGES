@@ -9,3 +9,6 @@ geopy
 certifi
 matplotlib
 seaborn
+streamlit
+plotly
+python-dotenv
