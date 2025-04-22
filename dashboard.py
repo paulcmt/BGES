@@ -155,8 +155,8 @@ def is_etl_running(engine):
 st.set_page_config(page_title="BGES Data Warehouse Dashboard", layout="wide")
 st.title("BGES Data Warehouse Dashboard")
 
-# Add refresh interval selector
-refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 1, 60, 5)
+# Add refresh interval selector (minimum 0.1 seconds)
+refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 0.1, 60.0, 0.1, step=0.1)
 
 # Add manual refresh button
 if st.sidebar.button("🔄 Manual Refresh"):

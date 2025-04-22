@@ -38,8 +38,69 @@ def print_message(message, color=INFO):
     """Helper function to print messages with color"""
     print(f"{color}{message}{RESET}")
 
-# Cache for city coordinates
-@lru_cache(maxsize=1000)
+# Cache for all mappings to avoid repeated database queries
+class MappingCache:
+    def __init__(self):
+        self.location_mapping = {}
+        self.transport_mapping = {}
+        self.mission_type_mapping = {}
+        self.employee_mapping = set()
+        self.employee_location_mapping = {}
+        self.last_refresh = None
+    
+    def refresh(self, engine):
+        """Refresh all mappings from the database"""
+        try:
+            with engine.connect() as conn:
+                # Get location mappings
+                locations = pd.read_sql("SELECT location_id, city, country FROM dim_location", conn)
+                self.location_mapping = {
+                    (row['city'].lower(), row['country'].lower()): row['location_id'] 
+                    for _, row in locations.iterrows()
+                }
+                
+                # Get transport mappings
+                transports = pd.read_sql("SELECT transport_id, transport_name FROM dim_transport", conn)
+                self.transport_mapping = {
+                    row['transport_name'].lower(): row['transport_id'] 
+                    for _, row in transports.iterrows()
+                }
+                
+                # Get mission type mappings
+                mission_types = pd.read_sql("SELECT mission_type_id, mission_type_name FROM dim_mission_type", conn)
+                self.mission_type_mapping = {
+                    row['mission_type_name'].lower(): row['mission_type_id'] 
+                    for _, row in mission_types.iterrows()
+                }
+                
+                # Get employee mappings
+                employees = pd.read_sql("""
+                    SELECT employee_id, current_city, current_country 
+                    FROM dim_employee
+                """, conn)
+                self.employee_mapping = set(employees['employee_id'])
+                self.employee_location_mapping = {
+                    row['employee_id']: (row['current_city'].lower(), row['current_country'].lower())
+                    for _, row in employees.iterrows()
+                }
+
+            self.last_refresh = datetime.now()
+            
+        except Exception as e:
+            print_message(f"Error refreshing mapping cache: {str(e)}", ERROR)
+            # Initialize empty mappings as fallback
+            self.location_mapping = {}
+            self.transport_mapping = {}
+            self.mission_type_mapping = {}
+            self.employee_mapping = set()
+            self.employee_location_mapping = {}
+            raise
+
+# Initialize the cache
+mapping_cache = MappingCache()
+
+# Cache for city coordinates with increased size
+@lru_cache(maxsize=5000)
 def get_city_coordinates(city: str, country: str) -> Optional[Tuple[float, float]]:
     """
     Get latitude and longitude coordinates for a city with caching
@@ -379,262 +440,276 @@ def create_db_engine():
         print_message(f"Error connecting to database: {str(e)}", ERROR)
         raise
 
-def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame):
+def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame, engine):
     """
-    Load data into dimension tables from transformed mission and personnel data
+    Load data into dimension tables with caching
     """
     try:
-        # Create database engine
-        engine = create_db_engine()
-        
         with engine.connect() as conn:
-            # Load dim_mission_type
-            mission_types = transformed_missions['MISSION_TYPE_ID'].unique()
-            for i, mission_type in enumerate(mission_types, 1):
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_mission_type (mission_type_id, mission_type_name)
-                        VALUES (:mission_type_id, :mission_type_name)
-                        ON CONFLICT (mission_type_id) DO NOTHING
-                    """),
-                    {"mission_type_id": i, "mission_type_name": mission_type}
-                )
-            conn.commit()
+            # Use a single transaction for all dimension table loads
+            with conn.begin():
+                # Load dim_mission_type
+                if not transformed_missions.empty:
+                    mission_types = transformed_missions['MISSION_TYPE_ID'].unique()
+                    mission_type_data = [{"mission_type_id": i, "mission_type_name": mission_type} 
+                                       for i, mission_type in enumerate(mission_types, 1)]
+                    
+                    if mission_type_data:
+                        conn.execute(
+                            text("""
+                                INSERT INTO dim_mission_type (mission_type_id, mission_type_name)
+                                VALUES (:mission_type_id, :mission_type_name)
+                                ON CONFLICT (mission_type_id) DO NOTHING
+                            """),
+                            mission_type_data
+                        )
 
-            # Load dim_location
-            # First get all unique locations from missions
-            mission_locations = pd.concat([
-                transformed_missions[['DEPARTURE_CITY', 'DEPARTURE_COUNTRY']].rename(
-                    columns={'DEPARTURE_CITY': 'city', 'DEPARTURE_COUNTRY': 'country'}
-                ),
-                transformed_missions[['DESTINATION_CITY', 'DESTINATION_COUNTRY']].rename(
-                    columns={'DESTINATION_CITY': 'city', 'DESTINATION_COUNTRY': 'country'}
-                )
-            ]).drop_duplicates()
+                # Load dim_location with caching
+                if not transformed_missions.empty:
+                    mission_locations = pd.concat([
+                        transformed_missions[['DEPARTURE_CITY', 'DEPARTURE_COUNTRY']].rename(
+                            columns={'DEPARTURE_CITY': 'city', 'DEPARTURE_COUNTRY': 'country'}
+                        ),
+                        transformed_missions[['DESTINATION_CITY', 'DESTINATION_COUNTRY']].rename(
+                            columns={'DESTINATION_CITY': 'city', 'DESTINATION_COUNTRY': 'country'}
+                        )
+                    ]).drop_duplicates()
 
-            # Get all unique locations from employees
-            employee_locations = pd.read_sql("""
-                SELECT DISTINCT current_city as city, current_country as country
-                FROM dim_employee
-            """, conn)
+                    employee_locations = pd.read_sql("""
+                        SELECT DISTINCT current_city as city, current_country as country
+                        FROM dim_employee
+                    """, conn)
 
-            # Combine all locations
-            all_locations = pd.concat([mission_locations, employee_locations]).drop_duplicates()
-            
-            # Convert to lowercase for consistency
-            all_locations['city'] = all_locations['city'].str.lower()
-            all_locations['country'] = all_locations['country'].str.lower()
-            
-            # Insert all locations
-            for i, (_, row) in enumerate(all_locations.iterrows(), 1):
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_location (location_id, city, country)
-                        VALUES (:location_id, :city, :country)
-                        ON CONFLICT (location_id) DO NOTHING
-                    """),
-                    {"location_id": i, "city": row['city'], "country": row['country']}
-                )
-            conn.commit()
+                    all_locations = pd.concat([mission_locations, employee_locations]).drop_duplicates()
+                    all_locations['city'] = all_locations['city'].str.lower()
+                    all_locations['country'] = all_locations['country'].str.lower()
+                    
+                    # Process locations in batches
+                    batch_size = 1000
+                    for i in range(0, len(all_locations), batch_size):
+                        batch = all_locations.iloc[i:i+batch_size]
+                        location_data = [{"location_id": j, "city": row['city'], "country": row['country']} 
+                                       for j, (_, row) in enumerate(batch.iterrows(), i+1)]
+                        
+                        if location_data:
+                            conn.execute(
+                                text("""
+                                    INSERT INTO dim_location (location_id, city, country)
+                                    VALUES (:location_id, :city, :country)
+                                    ON CONFLICT (location_id) DO NOTHING
+                                """),
+                                location_data
+                            )
 
-            # Load dim_date_time
-            mission_dates = transformed_missions['DATE_ID'].unique()
-            equipment_dates = transformed_equipment['purchase_date'].unique() if not transformed_equipment.empty else []
-            all_dates = pd.to_datetime(pd.concat([pd.Series(mission_dates), pd.Series(equipment_dates)]).unique())
-            
-            for date in all_dates:
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_date_time (date_id, date, day, month, year, hour, minute, second)
-                        VALUES (:date_id, :date, :day, :month, :year, :hour, :minute, :second)
-                        ON CONFLICT (date_id) DO NOTHING
-                    """),
-                    {
-                        "date_id": date,
-                        "date": date.date(),
-                        "day": date.day,
-                        "month": date.month,
-                        "year": date.year,
-                        "hour": date.hour,
-                        "minute": date.minute,
-                        "second": date.second
+                # Load dim_date_time with caching
+                if not transformed_missions.empty:
+                    mission_dates = transformed_missions['DATE_ID'].unique()
+                    equipment_dates = transformed_equipment['purchase_date'].unique() if not transformed_equipment.empty else []
+                    all_dates = pd.to_datetime(pd.concat([pd.Series(mission_dates), pd.Series(equipment_dates)]).unique())
+                    
+                    # Process dates in batches
+                    batch_size = 1000
+                    for i in range(0, len(all_dates), batch_size):
+                        batch = all_dates[i:i+batch_size]
+                        date_data = [{
+                            "date_id": date,
+                            "date": date.date(),
+                            "day": date.day,
+                            "month": date.month,
+                            "year": date.year,
+                            "hour": date.hour,
+                            "minute": date.minute,
+                            "second": date.second
+                        } for date in batch]
+                        
+                        if date_data:
+                            conn.execute(
+                                text("""
+                                    INSERT INTO dim_date_time (date_id, date, day, month, year, hour, minute, second)
+                                    VALUES (:date_id, :date, :day, :month, :year, :hour, :minute, :second)
+                                    ON CONFLICT (date_id) DO NOTHING
+                                """),
+                                date_data
+                            )
+
+                # Load dim_transport with caching
+                if not transformed_missions.empty:
+                    transport_factors = pd.read_csv('data/transport_factors_by_subcategory.tsv', sep='\t')
+                    transport_mapping = {
+                        'taxi': float(transport_factors[transport_factors['subcategory'] == 'taxi']['mean_emissions'].iloc[0]),
+                        'plane': float(transport_factors[transport_factors['subcategory'] == 'plane']['mean_emissions'].iloc[0]),
+                        'train': float(transport_factors[transport_factors['subcategory'] == 'train']['mean_emissions'].iloc[0]),
+                        'public transport': float(transport_factors[transport_factors['subcategory'] == 'public transport']['mean_emissions'].iloc[0])
                     }
-                )
-            conn.commit()
+                    
+                    transport_types = transformed_missions['TRANSPORT_ID'].unique()
+                    transport_data = [{
+                        "transport_id": i,
+                        "transport_name": transport,
+                        "emission_factor": transport_mapping.get(transport.lower(), 0.0)
+                    } for i, transport in enumerate(transport_types, 1)]
+                    
+                    if transport_data:
+                        conn.execute(
+                            text("""
+                                INSERT INTO dim_transport (transport_id, transport_name, emission_factor)
+                                VALUES (:transport_id, :transport_name, :emission_factor)
+                                ON CONFLICT (transport_id) DO NOTHING
+                            """),
+                            transport_data
+                        )
 
-            # Load dim_transport
-            transport_factors = pd.read_csv('data/transport_factors_by_subcategory.tsv', sep='\t')
-            transport_mapping = {
-                'taxi': float(transport_factors[transport_factors['subcategory'] == 'taxi']['mean_emissions'].iloc[0]),
-                'plane': float(transport_factors[transport_factors['subcategory'] == 'plane']['mean_emissions'].iloc[0]),
-                'train': float(transport_factors[transport_factors['subcategory'] == 'train']['mean_emissions'].iloc[0]),
-                'public transport': float(transport_factors[transport_factors['subcategory'] == 'public transport']['mean_emissions'].iloc[0])
-            }
-            
-            transport_types = transformed_missions['TRANSPORT_ID'].unique()
-            for i, transport in enumerate(transport_types, 1):
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_transport (transport_id, transport_name, emission_factor)
-                        VALUES (:transport_id, :transport_name, :emission_factor)
-                        ON CONFLICT (transport_id) DO NOTHING
-                    """),
-                    {"transport_id": i, "transport_name": transport, "emission_factor": transport_mapping.get(transport.lower(), 0.0)}
-                )
-            conn.commit()
-
-            # Load dim_equipment
-            if not transformed_equipment.empty:
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_equipment (equipment_id, equipment_type, model, co2_impact_kg)
-                        VALUES (:equipment_id, :equipment_type, :model, :co2_impact_kg)
-                        ON CONFLICT (equipment_id) DO NOTHING
-                    """),
-                    transformed_equipment.to_dict(orient='records')
-                )
-                conn.commit()
-
-        # Close the engine
-        engine.dispose()
+                # Load dim_equipment with caching
+                if not transformed_equipment.empty:
+                    batch_size = 1000
+                    for i in range(0, len(transformed_equipment), batch_size):
+                        batch = transformed_equipment.iloc[i:i+batch_size]
+                        conn.execute(
+                            text("""
+                                INSERT INTO dim_equipment (equipment_id, equipment_type, model, co2_impact_kg)
+                                VALUES (:equipment_id, :equipment_type, :model, :co2_impact_kg)
+                                ON CONFLICT (equipment_id) DO NOTHING
+                            """),
+                            batch.to_dict(orient='records')
+                        )
 
     except Exception as e:
         print_message(f"Error loading dimension tables: {str(e)}", ERROR)
         raise
 
-def load_fact_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame):
+def load_fact_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame, engine):
     """
-    Load data into fact tables after dimension tables are populated
+    Load data into fact tables with caching
     """
     try:
-        # Create database engine
-        engine = create_db_engine()
-        
         with engine.connect() as conn:
-            # First, get all the necessary mappings from dimension tables
-            # Get location mappings
-            locations = pd.read_sql("SELECT location_id, city, country FROM dim_location", conn)
-            location_mapping = {(row['city'].lower(), row['country'].lower()): row['location_id'] 
-                              for _, row in locations.iterrows()}
-            
-            # Get transport mappings
-            transports = pd.read_sql("SELECT transport_id, transport_name FROM dim_transport", conn)
-            transport_mapping = {row['transport_name'].lower(): row['transport_id'] 
-                               for _, row in transports.iterrows()}
-            
-            # Get mission type mappings
-            mission_types = pd.read_sql("SELECT mission_type_id, mission_type_name FROM dim_mission_type", conn)
-            mission_type_mapping = {row['mission_type_name'].lower(): row['mission_type_id'] 
-                                  for _, row in mission_types.iterrows()}
-            
-            # Load fact_business_travel
-            if not transformed_missions.empty:
-                # Map locations
-                transformed_missions['departure_location_id'] = transformed_missions.apply(
-                    lambda row: location_mapping.get((row['DEPARTURE_CITY'].lower(), row['DEPARTURE_COUNTRY'].lower())), 
-                    axis=1
-                )
-                transformed_missions['destination_location_id'] = transformed_missions.apply(
-                    lambda row: location_mapping.get((row['DESTINATION_CITY'].lower(), row['DESTINATION_COUNTRY'].lower())), 
-                    axis=1
-                )
+            # Use a single transaction for all fact table loads
+            with conn.begin():
+                # Refresh cache if needed
+                if mapping_cache.last_refresh is None or (datetime.now() - mapping_cache.last_refresh).total_seconds() > 300:
+                    print_message("Refreshing mapping cache...", INFO)
+                    mapping_cache.refresh(engine)
                 
-                # Map transport and mission types
-                transformed_missions['transport_id'] = transformed_missions['TRANSPORT_ID'].str.lower().map(transport_mapping)
-                transformed_missions['mission_type_id'] = transformed_missions['MISSION_TYPE_ID'].str.lower().map(mission_type_mapping)
-                
-                # Insert into fact_business_travel
-                conn.execute(
-                    text("""
-                        INSERT INTO fact_business_travel (
-                            travel_id, employee_id, mission_type_id, departure_location_id,
-                            destination_location_id, transport_id, date_id, distance_km,
-                            is_round_trip
-                        )
-                        VALUES (
-                            :travel_id, :employee_id, :mission_type_id, :departure_location_id,
-                            :destination_location_id, :transport_id, :date_id, :distance_km,
-                            :is_round_trip
-                        )
-                        ON CONFLICT (travel_id) DO NOTHING
-                    """),
-                    transformed_missions.rename(columns={
-                        'TRAVEL_ID': 'travel_id',
-                        'EMPLOYEE_ID': 'employee_id',
-                        'DATE_ID': 'date_id',
-                        'DISTANCE_KM': 'distance_km',
-                        'IS_ROUND_TRIP': 'is_round_trip'
-                    }).to_dict(orient='records')
-                )
-                conn.commit()
-            
-            # Load fact_employee_equipment
-            if not transformed_equipment.empty:
-                # Get employee mappings
-                employees = pd.read_sql("""
-                    SELECT employee_id, current_city, current_country 
-                    FROM dim_employee
-                """, conn)
-                employee_mapping = set(employees['employee_id'])
-                
-                # Filter equipment to only those assigned to valid employees
-                valid_equipment = transformed_equipment[transformed_equipment['employee_id'].isin(employee_mapping)]
-                
-                if not valid_equipment.empty:
-                    # Create a mapping of employee_id to their location
-                    employee_location_mapping = {
-                        row['employee_id']: (row['current_city'].lower(), row['current_country'].lower())
-                        for _, row in employees.iterrows()
-                    }
-                    
-                    # Add location_id to equipment data and handle missing values
-                    valid_equipment['location_id'] = valid_equipment['employee_id'].map(
-                        lambda x: location_mapping.get(employee_location_mapping.get(x, (None, None)))
+                # Load fact_business_travel with caching
+                if not transformed_missions.empty:
+                    # Map locations and types using vectorized operations
+                    transformed_missions['departure_location_id'] = transformed_missions.apply(
+                        lambda row: mapping_cache.location_mapping.get((row['DEPARTURE_CITY'].lower(), row['DEPARTURE_COUNTRY'].lower())), 
+                        axis=1
                     )
-                    
-                    # Convert location_id to integer, replacing NaN with None
-                    valid_equipment['location_id'] = pd.to_numeric(valid_equipment['location_id'], errors='coerce')
-                    valid_equipment['location_id'] = valid_equipment['location_id'].astype('Int64')  # Use nullable integer type
-                    
-                    # Prepare the data for insertion
-                    equipment_data = valid_equipment.rename(columns={
-                        'equipment_id': 'id_materiel',
-                        'purchase_date': 'purchase_date_id'
-                    }).copy()
-                    
-                    # Add equipment_id (same as id_materiel)
-                    equipment_data['equipment_id'] = equipment_data['id_materiel']
-                    
-                    # Select only the required columns
-                    equipment_data = equipment_data[[
-                        'id_materiel', 'equipment_id', 'employee_id', 
-                        'location_id', 'purchase_date_id'
-                    ]]
-                    
-                    # Convert to dict and handle None values
-                    records = equipment_data.to_dict(orient='records')
-                    for record in records:
-                        if pd.isna(record['location_id']):
-                            record['location_id'] = None
-                            print_message(f"Location ID is NaN for equipment {record['id_materiel']}", WARNING)
-                    
-                    # Insert into fact_employee_equipment
-                    conn.execute(
-                        text("""
-                            INSERT INTO fact_employee_equipment (
-                                id_materiel, equipment_id, employee_id, location_id, purchase_date_id
-                            )
-                            VALUES (
-                                :id_materiel, :equipment_id, :employee_id, :location_id, :purchase_date_id
-                            )
-                            ON CONFLICT (id_materiel) DO NOTHING
-                        """),
-                        records
+                    transformed_missions['destination_location_id'] = transformed_missions.apply(
+                        lambda row: mapping_cache.location_mapping.get((row['DESTINATION_CITY'].lower(), row['DESTINATION_COUNTRY'].lower())), 
+                        axis=1
                     )
-                    conn.commit()
-            
-        # Close the engine
-        engine.dispose()
+                    transformed_missions['transport_id'] = transformed_missions['TRANSPORT_ID'].str.lower().map(mapping_cache.transport_mapping)
+                    transformed_missions['mission_type_id'] = transformed_missions['MISSION_TYPE_ID'].str.lower().map(mapping_cache.mission_type_mapping)
+                    
+                    # Check for missing mappings
+                    missing_departure = transformed_missions['departure_location_id'].isna().sum()
+                    missing_destination = transformed_missions['destination_location_id'].isna().sum()
+                    missing_transport = transformed_missions['transport_id'].isna().sum()
+                    missing_mission_type = transformed_missions['mission_type_id'].isna().sum()
+                    
+                    if any([missing_departure, missing_destination, missing_transport, missing_mission_type]):
+                        print_message(f"Warning: Missing mappings - Departure: {missing_departure}, Destination: {missing_destination}, Transport: {missing_transport}, Mission Type: {missing_mission_type}", WARNING)
+                    
+                    # Process in batches
+                    batch_size = 1000
+                    total_batches = (len(transformed_missions) + batch_size - 1) // batch_size
+                    
+                    for i in range(0, len(transformed_missions), batch_size):
+                        batch = transformed_missions.iloc[i:i+batch_size]
+                        travel_data = batch.rename(columns={
+                            'TRAVEL_ID': 'travel_id',
+                            'EMPLOYEE_ID': 'employee_id',
+                            'DATE_ID': 'date_id',
+                            'DISTANCE_KM': 'distance_km',
+                            'IS_ROUND_TRIP': 'is_round_trip'
+                        }).to_dict(orient='records')
+                        
+                        if travel_data:
+                            try:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO fact_business_travel (
+                                            travel_id, employee_id, mission_type_id, departure_location_id,
+                                            destination_location_id, transport_id, date_id, distance_km,
+                                            is_round_trip
+                                        )
+                                        VALUES (
+                                            :travel_id, :employee_id, :mission_type_id, :departure_location_id,
+                                            :destination_location_id, :transport_id, :date_id, :distance_km,
+                                            :is_round_trip
+                                        )
+                                        ON CONFLICT (travel_id) DO NOTHING
+                                    """),
+                                    travel_data
+                                )
+                            except Exception as e:
+                                print_message(f"Error loading batch {i//batch_size + 1}: {str(e)}", ERROR)
+                                raise
+                
+                # Load fact_employee_equipment with caching
+                if not transformed_equipment.empty:
+                    # Filter equipment to only those assigned to valid employees
+                    valid_equipment = transformed_equipment[transformed_equipment['employee_id'].isin(mapping_cache.employee_mapping)]
+                    
+                    if not valid_equipment.empty:
+                        # Add location_id using vectorized operations
+                        valid_equipment['location_id'] = valid_equipment['employee_id'].map(
+                            lambda x: mapping_cache.location_mapping.get(mapping_cache.employee_location_mapping.get(x, (None, None)))
+                        )
+                        
+                        # Convert location_id to integer, replacing NaN with None
+                        valid_equipment['location_id'] = pd.to_numeric(valid_equipment['location_id'], errors='coerce')
+                        valid_equipment['location_id'] = valid_equipment['location_id'].astype('Int64')
+                        
+                        # Check for missing mappings
+                        missing_location = valid_equipment['location_id'].isna().sum()
+                        if missing_location > 0:
+                            print_message(f"Warning: {missing_location} equipment records have missing location mappings", WARNING)
+                        
+                        # Process in batches
+                        batch_size = 1000
+                        total_batches = (len(valid_equipment) + batch_size - 1) // batch_size
+                        
+                        for i in range(0, len(valid_equipment), batch_size):
+                            batch = valid_equipment.iloc[i:i+batch_size]
+                            equipment_data = batch.rename(columns={
+                                'equipment_id': 'id_materiel',
+                                'purchase_date': 'purchase_date_id'
+                            }).copy()
+                            
+                            equipment_data['equipment_id'] = equipment_data['id_materiel']
+                            equipment_data = equipment_data[[
+                                'id_materiel', 'equipment_id', 'employee_id', 
+                                'location_id', 'purchase_date_id'
+                            ]]
+                            
+                            # Convert to dict and handle None values
+                            records = equipment_data.to_dict(orient='records')
+                            for record in records:
+                                if pd.isna(record['location_id']):
+                                    record['location_id'] = None
+                                    print_message(f"Location ID is NaN for equipment {record['id_materiel']}", WARNING)
+                            
+                            if records:
+                                try:
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO fact_employee_equipment (
+                                                id_materiel, equipment_id, employee_id, location_id, purchase_date_id
+                                            )
+                                            VALUES (
+                                                :id_materiel, :equipment_id, :employee_id, :location_id, :purchase_date_id
+                                            )
+                                            ON CONFLICT (id_materiel) DO NOTHING
+                                        """),
+                                        records
+                                    )
+                                except Exception as e:
+                                    print_message(f"Error loading batch {i//batch_size + 1}: {str(e)}", ERROR)
+                                    raise
 
     except Exception as e:
         print_message(f"Error loading fact tables: {str(e)}", ERROR)
@@ -668,14 +743,17 @@ def process_date(date):
     try:
         # Extract data
         data = extract_data_for_date(date)
-        
         # Transform data
         transformed_missions = transform_all_mission_data(data)
         transformed_equipment = transform_all_equipment_data(data)
 
         # Load data
-        load_dimension_tables(transformed_missions, transformed_equipment)
-        load_fact_tables(transformed_missions, transformed_equipment)
+        engine = create_db_engine()
+        try:
+            load_dimension_tables(transformed_missions, transformed_equipment, engine)
+            load_fact_tables(transformed_missions, transformed_equipment, engine)
+        finally:
+            engine.dispose()
         
         elapsed_time = time.time() - start_time
         print_message(f"✓ {date_str} ETL completed in {elapsed_time:.2f}s", SUCCESS)
