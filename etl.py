@@ -209,11 +209,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         
         invalid_records = transformed[invalid_mask]
         if not invalid_records.empty:
-            invalid_count += len(invalid_records)
             transformed.loc[invalid_mask, 'DISTANCE_KM'] = median_distance
-    
-    if invalid_count > 0:
-        print_message(f"{WARNING}Fixed {invalid_count} invalid distances using median values{RESET}")
     
     # Double the distance for round trips
     round_trips = transformed['IS_ROUND_TRIP'].sum()
@@ -383,7 +379,7 @@ def create_db_engine():
         print_message(f"Error connecting to database: {str(e)}", ERROR)
         raise
 
-def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
+def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame):
     """
     Load data into dimension tables from transformed mission and personnel data
     """
@@ -406,25 +402,31 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
             conn.commit()
 
             # Load dim_location
-            locations = pd.concat([
+            # First get all unique locations from missions
+            mission_locations = pd.concat([
                 transformed_missions[['DEPARTURE_CITY', 'DEPARTURE_COUNTRY']].rename(
                     columns={'DEPARTURE_CITY': 'city', 'DEPARTURE_COUNTRY': 'country'}
                 ),
                 transformed_missions[['DESTINATION_CITY', 'DESTINATION_COUNTRY']].rename(
                     columns={'DESTINATION_CITY': 'city', 'DESTINATION_COUNTRY': 'country'}
-                ),
-                transformed_personnel[['birth_city', 'birth_country']].rename(
-                    columns={'birth_city': 'city', 'birth_country': 'country'}
-                ),
-                transformed_personnel[['current_city', 'current_country']].rename(
-                    columns={'current_city': 'city', 'current_country': 'country'}
                 )
             ]).drop_duplicates()
 
-            locations['city'] = locations['city'].str.lower()
-            locations['country'] = locations['country'].str.lower()
+            # Get all unique locations from employees
+            employee_locations = pd.read_sql("""
+                SELECT DISTINCT current_city as city, current_country as country
+                FROM dim_employee
+            """, conn)
+
+            # Combine all locations
+            all_locations = pd.concat([mission_locations, employee_locations]).drop_duplicates()
             
-            for i, (_, row) in enumerate(locations.iterrows(), 1):
+            # Convert to lowercase for consistency
+            all_locations['city'] = all_locations['city'].str.lower()
+            all_locations['country'] = all_locations['country'].str.lower()
+            
+            # Insert all locations
+            for i, (_, row) in enumerate(all_locations.iterrows(), 1):
                 conn.execute(
                     text("""
                         INSERT INTO dim_location (location_id, city, country)
@@ -481,41 +483,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
                 )
             conn.commit()
 
-            # Load dim_sector
-            sectors = transformed_personnel['sector_name'].unique()
-            for i, sector in enumerate(sectors, 1):
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_sector (sector_id, sector_name)
-                        VALUES (:sector_id, :sector_name)
-                        ON CONFLICT (sector_id) DO NOTHING
-                    """),
-                    {"sector_id": i, "sector_name": sector}
-                )
-            conn.commit()
-
-            # Load dim_employee
-            if not transformed_personnel.empty:
-                # Create sector mapping using the same index as when we loaded sectors
-                sector_mapping = {sector: i+1 for i, sector in enumerate(sectors)}
-                transformed_personnel['sector_id'] = transformed_personnel['sector_name'].map(sector_mapping)
-
-                conn.execute(
-                    text("""
-                        INSERT INTO dim_employee (employee_id, last_name, first_name, birth_date, birth_city, birth_country, 
-                                                social_security_number, phone_country_code, phone_number, address_street_number, 
-                                                address_street_name, address_complement, postal_code, current_city, current_country, 
-                                                sector_id, creation_date, last_update_date)
-                        VALUES (:employee_id, :last_name, :first_name, :birth_date, :birth_city, :birth_country, 
-                                :social_security_number, :phone_country_code, :phone_number, :address_street_number, 
-                                :address_street_name, :address_complement, :postal_code, :current_city, :current_country, 
-                                :sector_id, :creation_date, :last_update_date)
-                        ON CONFLICT (employee_id) DO NOTHING
-                    """),
-                    transformed_personnel.to_dict(orient='records')
-                )
-                conn.commit()
-
             # Load dim_equipment
             if not transformed_equipment.empty:
                 conn.execute(
@@ -535,7 +502,7 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_person
         print_message(f"Error loading dimension tables: {str(e)}", ERROR)
         raise
 
-def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: pd.DataFrame, transformed_equipment: pd.DataFrame):
+def load_fact_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame):
     """
     Load data into fact tables after dimension tables are populated
     """
@@ -604,29 +571,30 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
             # Load fact_employee_equipment
             if not transformed_equipment.empty:
                 # Get employee mappings
-                employees = pd.read_sql("SELECT employee_id FROM dim_employee", conn)
+                employees = pd.read_sql("""
+                    SELECT employee_id, current_city, current_country 
+                    FROM dim_employee
+                """, conn)
                 employee_mapping = set(employees['employee_id'])
                 
                 # Filter equipment to only those assigned to valid employees
                 valid_equipment = transformed_equipment[transformed_equipment['employee_id'].isin(employee_mapping)]
                 
                 if not valid_equipment.empty:
-                    # Get location information for each employee
-                    employee_locations = pd.read_sql("""
-                        SELECT e.employee_id, e.current_city, e.current_country 
-                        FROM dim_employee e
-                    """, conn)
-                    
                     # Create a mapping of employee_id to their location
                     employee_location_mapping = {
                         row['employee_id']: (row['current_city'].lower(), row['current_country'].lower())
-                        for _, row in employee_locations.iterrows()
+                        for _, row in employees.iterrows()
                     }
                     
-                    # Add location_id to equipment data
+                    # Add location_id to equipment data and handle missing values
                     valid_equipment['location_id'] = valid_equipment['employee_id'].map(
                         lambda x: location_mapping.get(employee_location_mapping.get(x, (None, None)))
                     )
+                    
+                    # Convert location_id to integer, replacing NaN with None
+                    valid_equipment['location_id'] = pd.to_numeric(valid_equipment['location_id'], errors='coerce')
+                    valid_equipment['location_id'] = valid_equipment['location_id'].astype('Int64')  # Use nullable integer type
                     
                     # Prepare the data for insertion
                     equipment_data = valid_equipment.rename(columns={
@@ -643,6 +611,13 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
                         'location_id', 'purchase_date_id'
                     ]]
                     
+                    # Convert to dict and handle None values
+                    records = equipment_data.to_dict(orient='records')
+                    for record in records:
+                        if pd.isna(record['location_id']):
+                            record['location_id'] = None
+                            print_message(f"Location ID is NaN for equipment {record['id_materiel']}", WARNING)
+                    
                     # Insert into fact_employee_equipment
                     conn.execute(
                         text("""
@@ -654,7 +629,7 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
                             )
                             ON CONFLICT (id_materiel) DO NOTHING
                         """),
-                        equipment_data.to_dict(orient='records')
+                        records
                     )
                     conn.commit()
             
@@ -664,6 +639,23 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_personnel: 
     except Exception as e:
         print_message(f"Error loading fact tables: {str(e)}", ERROR)
         raise
+
+def extract_personnel_data():
+    """
+    Extract personnel data for all cities
+    """
+    personnel_dfs = []
+    
+    for city in CITIES:
+        personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
+        if os.path.exists(personnel_path):
+            personnel_df = pd.read_csv(personnel_path, delimiter=';')
+            personnel_dfs.append(personnel_df)
+    
+    if personnel_dfs:
+        return pd.concat(personnel_dfs, ignore_index=True)
+    else:
+        return pd.DataFrame()
 
 def process_date(date):
     """
@@ -679,12 +671,11 @@ def process_date(date):
         
         # Transform data
         transformed_missions = transform_all_mission_data(data)
-        transformed_personnel = transform_all_personnel_data(data)
         transformed_equipment = transform_all_equipment_data(data)
 
         # Load data
-        load_dimension_tables(transformed_missions, transformed_personnel, transformed_equipment)
-        load_fact_tables(transformed_missions, transformed_personnel, transformed_equipment)
+        load_dimension_tables(transformed_missions, transformed_equipment)
+        load_fact_tables(transformed_missions, transformed_equipment)
         
         elapsed_time = time.time() - start_time
         print_message(f"✓ {date_str} ETL completed in {elapsed_time:.2f}s", SUCCESS)
@@ -695,6 +686,71 @@ def process_date(date):
 
 if __name__ == "__main__":
     print_message("Starting ETL process")
+    
+    # First, process personnel data for all cities
+    print_message("Processing personnel data for all cities...")
+    personnel_data = extract_personnel_data()
+    transformed_personnel = transform_personnel_data(personnel_data)
+    
+    # Load sector data first
+    print_message("Loading sector data into dimension tables...")
+    try:
+        engine = create_db_engine()
+        with engine.connect() as conn:
+            # Load dim_sector
+            sectors = transformed_personnel['sector_name'].unique()
+            for i, sector in enumerate(sectors, 1):
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_sector (sector_id, sector_name)
+                        VALUES (:sector_id, :sector_name)
+                        ON CONFLICT (sector_id) DO NOTHING
+                    """),
+                    {"sector_id": i, "sector_name": sector}
+                )
+            conn.commit()
+            
+            # Create sector mapping for employee data
+            sector_mapping = {sector: i+1 for i, sector in enumerate(sectors)}
+            transformed_personnel['sector_id'] = transformed_personnel['sector_name'].map(sector_mapping)
+            
+        engine.dispose()
+        print_message("✓ Sector data loaded successfully", SUCCESS)
+    except Exception as e:
+        print_message(f"Error loading sector data: {str(e)}", ERROR)
+        raise
+    
+    # Load personnel data into dim_employee
+    print_message("Loading personnel data into dimension tables...")
+    try:
+        engine = create_db_engine()
+        with engine.connect() as conn:
+            # Load dim_employee
+            if not transformed_personnel.empty:
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_employee (
+                            employee_id, last_name, first_name, birth_date, birth_city, birth_country,
+                            social_security_number, phone_country_code, phone_number, address_street_number,
+                            address_street_name, address_complement, postal_code, current_city, current_country,
+                            sector_id, creation_date, last_update_date
+                        )
+                        VALUES (
+                            :employee_id, :last_name, :first_name, :birth_date, :birth_city, :birth_country,
+                            :social_security_number, :phone_country_code, :phone_number, :address_street_number,
+                            :address_street_name, :address_complement, :postal_code, :current_city, :current_country,
+                            :sector_id, :creation_date, :last_update_date
+                        )
+                        ON CONFLICT (employee_id) DO NOTHING
+                    """),
+                    transformed_personnel.to_dict(orient='records')
+                )
+                conn.commit()
+        engine.dispose()
+        print_message("✓ Personnel data loaded successfully", SUCCESS)
+    except Exception as e:
+        print_message(f"Error loading personnel data: {str(e)}", ERROR)
+        raise
     
     # Get list of dates from mission files
     mission_dates = set()

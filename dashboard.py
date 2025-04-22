@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import os
@@ -91,71 +91,64 @@ def get_mission_type_stats(engine):
 def is_etl_running(engine):
     with engine.connect() as conn:
         try:
-            # First check if tables exist and have data
+            # Check if any tables are being modified
             result = conn.execute(text("""
                 SELECT 
-                    table_name,
-                    (SELECT COUNT(*) FROM information_schema.tables 
-                     WHERE table_schema = 'public' 
-                     AND table_name = t.table_name) as table_exists,
-                    (SELECT COUNT(*) FROM information_schema.columns 
-                     WHERE table_schema = 'public' 
-                     AND table_name = t.table_name) as has_columns
-                FROM (VALUES 
-                    ('dim_employee'),
-                    ('fact_business_travel'),
-                    ('fact_employee_equipment')
-                ) t(table_name)
+                    schemaname,
+                    relname as table_name,
+                    n_live_tup as live_rows,
+                    n_dead_tup as dead_rows,
+                    last_vacuum,
+                    last_autovacuum,
+                    last_analyze,
+                    last_autoanalyze
+                FROM pg_stat_user_tables
+                WHERE schemaname = 'public'
+                AND relname IN (
+                    'dim_employee',
+                    'fact_business_travel',
+                    'fact_employee_equipment'
+                )
             """))
             
-            table_status = {row[0]: (row[1] > 0, row[2] > 0) for row in result}
+            # Get the current state of the tables
+            table_status = {row[1]: {
+                'live_rows': row[2],
+                'dead_rows': row[3],
+                'last_vacuum': row[4],
+                'last_autovacuum': row[5],
+                'last_analyze': row[6],
+                'last_autoanalyze': row[7]
+            } for row in result}
             
-            # If any required table doesn't exist or has no columns, ETL is still running
-            if not all(exists for exists, _ in table_status.values()):
+            # If any required table doesn't exist, ETL is still running
+            if not all(table in table_status for table in ['dim_employee', 'fact_business_travel', 'fact_employee_equipment']):
                 return True
             
-            # Check for data in each table
+            # Check for recent vacuum or analyze operations (within last minute)
+            now = datetime.now(timezone.utc)  # Make now timezone-aware
             for table in table_status:
-                if table_status[table][0]:  # if table exists
-                    count_result = conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
-                    if count_result.scalar() == 0:
-                        return True  # If any table exists but has no data, ETL is still running
+                status = table_status[table]
+                for timestamp_field in ['last_vacuum', 'last_autovacuum', 'last_analyze', 'last_autoanalyze']:
+                    if status[timestamp_field] is not None:
+                        # Convert PostgreSQL timestamp to timezone-aware datetime if needed
+                        if status[timestamp_field].tzinfo is None:
+                            status[timestamp_field] = status[timestamp_field].replace(tzinfo=timezone.utc)
+                        time_diff = (now - status[timestamp_field]).total_seconds()
+                        if time_diff < 20:  # 20 seconds
+                            return True
             
-            # If we have tables with data, check for recent updates
-            query_parts = []
-            if table_status['dim_employee'][0]:
-                query_parts.append("SELECT 'dim_employee' as table_name, last_update_date FROM dim_employee")
-            if table_status['fact_business_travel'][0]:
-                query_parts.append("SELECT 'fact_business_travel' as table_name, date_id FROM fact_business_travel")
-            if table_status['fact_employee_equipment'][0]:
-                query_parts.append("SELECT 'fact_employee_equipment' as table_name, purchase_date_id FROM fact_employee_equipment")
+            # Check for dead rows (indicates recent modifications)
+            for table in table_status:
+                if table_status[table]['dead_rows'] > 0:
+                    return True
             
-            if not query_parts:
-                return True
-            
-            # Combine the queries
-            union_query = " UNION ALL ".join(query_parts)
-            
-            # Execute the final query
-            result = conn.execute(text(f"""
-                SELECT 
-                    MAX(CASE WHEN table_name = 'dim_employee' THEN last_update_date END) as employee_update,
-                    MAX(CASE WHEN table_name = 'fact_business_travel' THEN date_id END) as travel_update,
-                    MAX(CASE WHEN table_name = 'fact_employee_equipment' THEN purchase_date_id END) as equipment_update
-                FROM ({union_query}) updates
-            """))
-            
-            row = result.fetchone()
-            
-            # If any of the timestamps are within the last 2 minutes, consider ETL still running
-            now = datetime.now()
-            return any(
-                timestamp is not None and (now - timestamp).total_seconds() < 120
-                for timestamp in row
-            )
+            # If we get here, no recent activity was detected
+            return False
             
         except Exception as e:
             # If there's any error, consider ETL still running
+            print(f"Error checking ETL status: {e}")
             return True
 
 # Set up the Streamlit page
@@ -164,6 +157,10 @@ st.title("BGES Data Warehouse Dashboard")
 
 # Add refresh interval selector
 refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 1, 60, 5)
+
+# Add manual refresh button
+if st.sidebar.button("🔄 Manual Refresh"):
+    st.rerun()
 
 # Create a container for the metrics
 metrics_container = st.container()
@@ -257,6 +254,10 @@ def display_dashboard():
 
 # Display the dashboard
 display_dashboard()
+
+# Auto-refresh based on selected interval
+time.sleep(refresh_interval)
+st.rerun()
 
 # If ETL is not complete, set up auto-refresh
 if not st.session_state.is_etl_complete:
