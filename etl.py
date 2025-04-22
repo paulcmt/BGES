@@ -52,6 +52,10 @@ def calculate_distance(departure_city: str, departure_country: str,
     """
     Calculate distance in kilometers between two cities
     """
+
+    if departure_city == destination_city and departure_country == destination_country:
+        return 5.0
+
     # Get coordinates for both cities with retry
     departure_coords = get_city_coordinates(departure_city, departure_country)
     if not departure_coords:
