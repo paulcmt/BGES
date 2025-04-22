@@ -12,7 +12,7 @@ This project is about creating a Data Warehouse for a company that wants to esti
    - `pip install -r requirements.txt`
 4. Run the docker container
    - `docker-compose up -d`
-5. Run the streamlit app
-   - `streamlit run dashboard.py`
-6. Run the ETL process
+5. Run the ETL process
    - `python etl.py`
+6. Run the streamlit app to visualize the data filled in the database in real time
+   - `streamlit run dashboard.py`

@@ -7,13 +7,18 @@ import time
 from datetime import datetime
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+import os
+from dotenv import load_dotenv
 
-# Database connection parameters
-DB_USER = 'postgres'
-DB_PASSWORD = 'postgres'
-DB_HOST = 'localhost'
-DB_PORT = '5432'
-DB_NAME = 'postgres'
+# Load environment variables from db.env
+load_dotenv('db.env')
+
+# Database connection parameters from environment variables
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_HOST = os.getenv('DB_HOST')
+DB_PORT = os.getenv('DB_PORT')
+DB_NAME = os.getenv('DB_NAME')
 
 # Create database engine
 def create_db_engine():
@@ -82,6 +87,77 @@ def get_mission_type_stats(engine):
         """))
         return pd.DataFrame(result.fetchall(), columns=['Mission Type', 'Count'])
 
+# Function to check if ETL is still running
+def is_etl_running(engine):
+    with engine.connect() as conn:
+        try:
+            # First check if tables exist and have data
+            result = conn.execute(text("""
+                SELECT 
+                    table_name,
+                    (SELECT COUNT(*) FROM information_schema.tables 
+                     WHERE table_schema = 'public' 
+                     AND table_name = t.table_name) as table_exists,
+                    (SELECT COUNT(*) FROM information_schema.columns 
+                     WHERE table_schema = 'public' 
+                     AND table_name = t.table_name) as has_columns
+                FROM (VALUES 
+                    ('dim_employee'),
+                    ('fact_business_travel'),
+                    ('fact_employee_equipment')
+                ) t(table_name)
+            """))
+            
+            table_status = {row[0]: (row[1] > 0, row[2] > 0) for row in result}
+            
+            # If any required table doesn't exist or has no columns, ETL is still running
+            if not all(exists for exists, _ in table_status.values()):
+                return True
+            
+            # Check for data in each table
+            for table in table_status:
+                if table_status[table][0]:  # if table exists
+                    count_result = conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
+                    if count_result.scalar() == 0:
+                        return True  # If any table exists but has no data, ETL is still running
+            
+            # If we have tables with data, check for recent updates
+            query_parts = []
+            if table_status['dim_employee'][0]:
+                query_parts.append("SELECT 'dim_employee' as table_name, last_update_date FROM dim_employee")
+            if table_status['fact_business_travel'][0]:
+                query_parts.append("SELECT 'fact_business_travel' as table_name, date_id FROM fact_business_travel")
+            if table_status['fact_employee_equipment'][0]:
+                query_parts.append("SELECT 'fact_employee_equipment' as table_name, purchase_date_id FROM fact_employee_equipment")
+            
+            if not query_parts:
+                return True
+            
+            # Combine the queries
+            union_query = " UNION ALL ".join(query_parts)
+            
+            # Execute the final query
+            result = conn.execute(text(f"""
+                SELECT 
+                    MAX(CASE WHEN table_name = 'dim_employee' THEN last_update_date END) as employee_update,
+                    MAX(CASE WHEN table_name = 'fact_business_travel' THEN date_id END) as travel_update,
+                    MAX(CASE WHEN table_name = 'fact_employee_equipment' THEN purchase_date_id END) as equipment_update
+                FROM ({union_query}) updates
+            """))
+            
+            row = result.fetchone()
+            
+            # If any of the timestamps are within the last 2 minutes, consider ETL still running
+            now = datetime.now()
+            return any(
+                timestamp is not None and (now - timestamp).total_seconds() < 120
+                for timestamp in row
+            )
+            
+        except Exception as e:
+            # If there's any error, consider ETL still running
+            return True
+
 # Set up the Streamlit page
 st.set_page_config(page_title="BGES Data Warehouse Dashboard", layout="wide")
 st.title("BGES Data Warehouse Dashboard")
@@ -101,11 +177,27 @@ dates_container = st.container()
 # Initialize the database engine
 engine = create_db_engine()
 
-# Main dashboard loop
-while True:
+# Initialize session state for tracking updates
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = None
+if 'is_etl_complete' not in st.session_state:
+    st.session_state.is_etl_complete = False
+if 'last_counts' not in st.session_state:
+    st.session_state.last_counts = None
+
+# Main dashboard display
+def display_dashboard():
     with metrics_container:
         st.header("Table Statistics")
         counts = get_table_counts(engine)
+        
+        # Check if counts have changed since last update
+        if st.session_state.last_counts is not None and counts == st.session_state.last_counts:
+            if not st.session_state.is_etl_complete:
+                st.session_state.is_etl_complete = True
+                st.sidebar.success("ETL process completed! Dashboard will no longer refresh.")
+        else:
+            st.session_state.last_counts = counts
         
         # Create metrics in a grid
         cols = st.columns(3)
@@ -157,6 +249,19 @@ while True:
                     title='Distribution of Mission Types')
         st.plotly_chart(fig, use_container_width=True)
     
-    # Refresh based on selected interval
+    # Check if ETL is still running
+    if not st.session_state.is_etl_complete:
+        if not is_etl_running(engine):
+            st.session_state.is_etl_complete = True
+            st.sidebar.success("ETL process completed! Dashboard will no longer refresh.")
+
+# Display the dashboard
+display_dashboard()
+
+# If ETL is not complete, set up auto-refresh
+if not st.session_state.is_etl_complete:
     time.sleep(refresh_interval)
-    st.rerun() 
+    st.rerun()
+else:
+    # Display completion message
+    st.sidebar.info("Dashboard is now static. To refresh, please restart the dashboard.") 

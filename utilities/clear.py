@@ -1,12 +1,16 @@
 from sqlalchemy import create_engine, text
 import os
+from dotenv import load_dotenv
 
-# Database connection parameters
-DB_USER = 'postgres'
-DB_PASSWORD = 'postgres'
-DB_HOST = 'localhost'
-DB_PORT = '5432'
-DB_NAME = 'postgres'
+# Load environment variables from db.env
+load_dotenv('db.env')
+
+# Database connection parameters from environment variables
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_HOST = os.getenv('DB_HOST')
+DB_PORT = os.getenv('DB_PORT')
+DB_NAME = os.getenv('DB_NAME')
 
 # Create SQLAlchemy engine
 engine = create_engine(f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}')

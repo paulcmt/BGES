@@ -12,8 +12,19 @@ import certifi
 import time
 from functools import lru_cache
 from sqlalchemy import text
+from dotenv import load_dotenv
 
 from constants import *
+
+# Load environment variables from db.env
+load_dotenv('db.env')
+
+# Database connection parameters from environment variables
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_HOST = os.getenv('DB_HOST')
+DB_PORT = os.getenv('DB_PORT')
+DB_NAME = os.getenv('DB_NAME')
 
 # Ignore timezone for pyarrow
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
@@ -191,7 +202,7 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
             (transformed['TRANSPORT_ID'] == transport_type) & 
             (
                 (transformed['DISTANCE_KM'].isna()) |  # Null distances
-                (transformed['DISTANCE_KM'] < 0) |     # Negative distances
+                (transformed['DISTANCE_KM'] <= 0) |     # Negative and 0 distances
                 (transformed['DISTANCE_KM'] > max_distances.get(transport_type, float('inf')))  # Unrealistic distances
             )
         )
@@ -361,18 +372,9 @@ def create_db_engine():
     Create a connection to the PostgreSQL database
     """
     try:
-        # Connection parameters
-        db_params = {
-            'dbname': 'postgres',
-            'user': 'postgres',
-            'password': 'postgres',
-            'host': 'localhost',
-            'port': '5432'
-        }
-        
         # Create SQLAlchemy engine
         engine = sqlalchemy_create_engine(
-            f"postgresql://{db_params['user']}:{db_params['password']}@{db_params['host']}:{db_params['port']}/{db_params['dbname']}"
+            f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         )
         
         return engine
