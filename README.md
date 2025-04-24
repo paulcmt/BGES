@@ -5,16 +5,17 @@ This project is about creating a Data Warehouse for a company that wants to esti
 ## HOW TO RUN THE PROJECT ?
 
 1. Clone the repository
-2. Create a virtual environment
+2. Install docker (cf https://www.docker.com/products/docker-desktop/)
+3. Create a virtual environment
    - `python -m venv venv`
    - `source venv/bin/activate`
-3. Install the dependencies
+4. Install the dependencies
    - `pip install -r requirements.txt`
-4. Run the docker container
+5. Run the docker container
    - `docker-compose up -d`
-5. Add the data to the database
+6. Add the data to the database
    - `docker exec -i bges-postgres-1 psql -U postgres -d postgres < db.sql`
-6. Run the ETL process
+7. Run the ETL process
    - `python etl.py`
-7. Run the streamlit app to visualize the data filled in the database in real time
+8. Run the streamlit app to visualize the data filled in the database in real time
    - `streamlit run dashboard.py`
