@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import os
@@ -24,8 +24,18 @@ DB_NAME = os.getenv('DB_NAME')
 def create_db_engine():
     return create_engine(f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}')
 
-# Function to get table counts
-def get_table_counts(engine):
+# Function to get available date range
+def get_date_range(engine):
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT MIN(date) as min_date, MAX(date) as max_date
+            FROM dim_date_time
+        """))
+        row = result.fetchone()
+        return row[0], row[1]
+
+# Function to get table counts with date filter
+def get_table_counts(engine, start_date=None, end_date=None):
     with engine.connect() as conn:
         tables = ['dim_employee', 'dim_equipment', 'dim_location', 'dim_mission_type', 
                  'dim_sector', 'dim_transport', 'dim_date_time', 'fact_business_travel', 
@@ -34,11 +44,79 @@ def get_table_counts(engine):
         counts = {}
         for table in tables:
             try:
-                result = conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
+                if table in ['fact_business_travel', 'fact_employee_equipment'] and start_date and end_date:
+                    if table == 'fact_business_travel':
+                        query = f"""
+                            SELECT COUNT(*) 
+                            FROM {table} bt
+                            JOIN dim_date_time dt ON bt.date_id = dt.date_id
+                            WHERE dt.date BETWEEN :start_date AND :end_date
+                        """
+                    else:  # fact_employee_equipment
+                        query = f"""
+                            SELECT COUNT(*) 
+                            FROM {table} ee
+                            JOIN dim_date_time dt ON ee.purchase_date_id = dt.date_id
+                            WHERE dt.date BETWEEN :start_date AND :end_date
+                        """
+                    result = conn.execute(text(query), {"start_date": start_date, "end_date": end_date})
+                else:
+                    result = conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
                 counts[table] = result.scalar()
             except:
                 counts[table] = 0
         return counts
+
+# Function to get transport statistics with date filter
+def get_transport_stats(engine, start_date=None, end_date=None):
+    with engine.connect() as conn:
+        query = """
+            SELECT t.transport_name, COUNT(*) as count, 
+                   SUM(bt.distance_km) as total_distance,
+                   SUM(bt.distance_km * t.emission_factor) as total_emissions
+            FROM fact_business_travel bt
+            JOIN dim_transport t ON bt.transport_id = t.transport_id
+            JOIN dim_date_time dt ON bt.date_id = dt.date_id
+        """
+        if start_date and end_date:
+            query += " WHERE dt.date BETWEEN :start_date AND :end_date"
+        query += " GROUP BY t.transport_name"
+        
+        result = conn.execute(text(query), {"start_date": start_date, "end_date": end_date})
+        return pd.DataFrame(result.fetchall(), columns=['Transport', 'Count', 'Total Distance', 'Total Emissions'])
+
+# Function to get equipment statistics with date filter
+def get_equipment_stats(engine, start_date=None, end_date=None):
+    with engine.connect() as conn:
+        query = """
+            SELECT e.equipment_type, COUNT(*) as count,
+                   SUM(e.co2_impact_kg) as total_impact
+            FROM fact_employee_equipment fee
+            JOIN dim_equipment e ON fee.equipment_id = e.equipment_id
+            JOIN dim_date_time dt ON fee.purchase_date_id = dt.date_id
+        """
+        if start_date and end_date:
+            query += " WHERE dt.date BETWEEN :start_date AND :end_date"
+        query += " GROUP BY e.equipment_type"
+        
+        result = conn.execute(text(query), {"start_date": start_date, "end_date": end_date})
+        return pd.DataFrame(result.fetchall(), columns=['Equipment Type', 'Count', 'Total Impact'])
+
+# Function to get mission type statistics with date filter
+def get_mission_type_stats(engine, start_date=None, end_date=None):
+    with engine.connect() as conn:
+        query = """
+            SELECT mt.mission_type_name, COUNT(*) as count
+            FROM fact_business_travel bt
+            JOIN dim_mission_type mt ON bt.mission_type_id = mt.mission_type_id
+            JOIN dim_date_time dt ON bt.date_id = dt.date_id
+        """
+        if start_date and end_date:
+            query += " WHERE dt.date BETWEEN :start_date AND :end_date"
+        query += " GROUP BY mt.mission_type_name"
+        
+        result = conn.execute(text(query), {"start_date": start_date, "end_date": end_date})
+        return pd.DataFrame(result.fetchall(), columns=['Mission Type', 'Count'])
 
 # Function to get latest ETL dates
 def get_latest_etl_dates(engine):
@@ -50,42 +128,6 @@ def get_latest_etl_dates(engine):
             LIMIT 5
         """))
         return [row[0] for row in result]
-
-# Function to get transport statistics
-def get_transport_stats(engine):
-    with engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT t.transport_name, COUNT(*) as count, 
-                   SUM(bt.distance_km) as total_distance,
-                   SUM(bt.distance_km * t.emission_factor) as total_emissions
-            FROM fact_business_travel bt
-            JOIN dim_transport t ON bt.transport_id = t.transport_id
-            GROUP BY t.transport_name
-        """))
-        return pd.DataFrame(result.fetchall(), columns=['Transport', 'Count', 'Total Distance', 'Total Emissions'])
-
-# Function to get equipment statistics
-def get_equipment_stats(engine):
-    with engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT e.equipment_type, COUNT(*) as count,
-                   SUM(e.co2_impact_kg) as total_impact
-            FROM fact_employee_equipment fee
-            JOIN dim_equipment e ON fee.equipment_id = e.equipment_id
-            GROUP BY e.equipment_type
-        """))
-        return pd.DataFrame(result.fetchall(), columns=['Equipment Type', 'Count', 'Total Impact'])
-
-# Function to get mission type statistics
-def get_mission_type_stats(engine):
-    with engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT mt.mission_type_name, COUNT(*) as count
-            FROM fact_business_travel bt
-            JOIN dim_mission_type mt ON bt.mission_type_id = mt.mission_type_id
-            GROUP BY mt.mission_type_name
-        """))
-        return pd.DataFrame(result.fetchall(), columns=['Mission Type', 'Count'])
 
 # Function to check if ETL is still running
 def is_etl_running(engine):
@@ -155,6 +197,32 @@ def is_etl_running(engine):
 st.set_page_config(page_title="BGES Data Warehouse Dashboard", layout="wide")
 st.title("BGES Data Warehouse Dashboard")
 
+# Initialize the database engine
+engine = create_db_engine()
+
+# Get available date range
+min_date, max_date = get_date_range(engine)
+
+# Add date range filters in the sidebar
+st.sidebar.header("Date Range Filter")
+start_date = st.sidebar.date_input(
+    "Start Date",
+    min_date,
+    min_value=min_date,
+    max_value=max_date
+)
+end_date = st.sidebar.date_input(
+    "End Date",
+    max_date,
+    min_value=min_date,
+    max_value=max_date
+)
+
+# Validate date range
+if start_date > end_date:
+    st.sidebar.error("Error: End date must be after start date.")
+    st.stop()
+
 # Add refresh interval selector (minimum 0.1 seconds)
 refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 0.1, 60.0, 0.1, step=0.1)
 
@@ -171,9 +239,6 @@ col1, col2 = st.columns(2)
 # Create a container for the latest ETL dates
 dates_container = st.container()
 
-# Initialize the database engine
-engine = create_db_engine()
-
 # Initialize session state for tracking updates
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
@@ -186,7 +251,7 @@ if 'last_counts' not in st.session_state:
 def display_dashboard():
     with metrics_container:
         st.header("Table Statistics")
-        counts = get_table_counts(engine)
+        counts = get_table_counts(engine, start_date, end_date)
         
         # Check if counts have changed since last update
         if st.session_state.last_counts is not None and counts == st.session_state.last_counts:
@@ -207,7 +272,7 @@ def display_dashboard():
     
     with col1:
         st.header("Transport Statistics")
-        transport_stats = get_transport_stats(engine)
+        transport_stats = get_transport_stats(engine, start_date, end_date)
         
         # Create a pie chart for transport counts
         fig = px.pie(transport_stats, values='Count', names='Transport', 
@@ -221,7 +286,7 @@ def display_dashboard():
     
     with col2:
         st.header("Equipment Statistics")
-        equipment_stats = get_equipment_stats(engine)
+        equipment_stats = get_equipment_stats(engine, start_date, end_date)
         
         # Create a pie chart for equipment counts
         fig = px.pie(equipment_stats, values='Count', names='Equipment Type',
@@ -234,14 +299,12 @@ def display_dashboard():
         st.plotly_chart(fig, use_container_width=True)
     
     with dates_container:
-        st.header("Latest ETL Dates")
-        latest_dates = get_latest_etl_dates(engine)
-        for date in latest_dates:
-            st.write(f"✓ {date.strftime('%Y-%m-%d')}")
+        st.header("Selected Date Range")
+        st.write(f"From: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         
         # Add mission type statistics
         st.header("Mission Type Distribution")
-        mission_stats = get_mission_type_stats(engine)
+        mission_stats = get_mission_type_stats(engine, start_date, end_date)
         fig = px.pie(mission_stats, values='Count', names='Mission Type',
                     title='Distribution of Mission Types')
         st.plotly_chart(fig, use_container_width=True)

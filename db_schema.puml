@@ -8,18 +8,98 @@ skinparam class {
     BorderColor Black
 }
 
-' Dimension Tables
-class "dim_mission_type" as mission_type
-class "dim_transport" as transport
-class "dim_date_time" as date_time
-class "dim_location" as location
-class "dim_sector" as sector
-class "dim_equipment" as equipment
-class "dim_employee" as employee
+' Top row - Dimension tables
+class "dim_sector" as sector {
+    + sector_id: INT
+    sector_name: VARCHAR(100)
+}
 
-' Fact Tables
-class "fact_business_travel" as business_travel
-class "fact_employee_equipment" as employee_equipment
+class "dim_employee" as employee {
+    + employee_id: VARCHAR(50)
+    last_name: VARCHAR(100)
+    first_name: VARCHAR(100)
+    birth_date: DATE
+    birth_city: VARCHAR(100)
+    birth_country: VARCHAR(100)
+    social_security_number: VARCHAR(50)
+    phone_country_code: VARCHAR(10)
+    phone_number: VARCHAR(50)
+    address_street_number: VARCHAR(20)
+    address_street_name: VARCHAR(200)
+    address_complement: VARCHAR(200)
+    postal_code: VARCHAR(20)
+    current_city: VARCHAR(100)
+    current_country: VARCHAR(100)
+    sector_id: INT
+    creation_date: TIMESTAMP
+    last_update_date: TIMESTAMP
+}
+
+class "dim_equipment" as equipment {
+    + equipment_id: VARCHAR(50)
+    equipment_type: VARCHAR(100)
+    model: VARCHAR(100)
+    co2_impact_kg: DECIMAL(10,2)
+}
+
+' Bottom row - Fact tables and dimensions
+class "dim_mission_type" as mission_type {
+    + mission_type_id: INT
+    mission_type_name: VARCHAR(100)
+}
+
+class "dim_transport" as transport {
+    + transport_id: INT
+    transport_name: VARCHAR(100)
+    emission_factor: DECIMAL(10,4)
+}
+
+class "fact_business_travel" as business_travel {
+    + travel_id: VARCHAR(50)
+    employee_id: VARCHAR(50)
+    mission_type_id: INT
+    departure_location_id: INT
+    destination_location_id: INT
+    transport_id: INT
+    date_id: TIMESTAMP
+    distance_km: DECIMAL(10,2)
+    is_round_trip: BOOLEAN
+}
+
+class "dim_location" as location {
+    + location_id: INT
+    city: VARCHAR(100)
+    country: VARCHAR(100)
+}
+
+class "dim_date_time" as date_time {
+    + date_id: TIMESTAMP
+    date: DATE
+    day: INT
+    month: INT
+    year: INT
+    hour: INT
+    minute: INT
+    second: INT
+}
+
+class "fact_employee_equipment" as employee_equipment {
+    + id_materiel: VARCHAR(50)
+    equipment_id: VARCHAR(50)
+    employee_id: VARCHAR(50)
+    location_id: INT
+    purchase_date_id: TIMESTAMP
+}
+
+' Layout
+sector -[hidden]right- employee
+employee -[hidden]right- equipment
+
+mission_type -[hidden]right- transport
+transport -[hidden]right- business_travel
+business_travel -[hidden]right- location
+location -[hidden]right- date_time
+date_time -[hidden]right- employee_equipment
 
 ' Relationships
 employee -- business_travel
