@@ -44,7 +44,7 @@ def get_table_counts(engine, start_date=None, end_date=None):
         counts = {}
         for table in tables:
             try:
-                if table in ['fact_business_travel', 'fact_employee_equipment'] and start_date and end_date:
+                if table in ['fact_business_travel', 'fact_employee_equipment'] and start_date is not None and end_date is not None:
                     if table == 'fact_business_travel':
                         query = f"""
                             SELECT COUNT(*) 
@@ -78,7 +78,7 @@ def get_transport_stats(engine, start_date=None, end_date=None):
             JOIN dim_transport t ON bt.transport_id = t.transport_id
             JOIN dim_date_time dt ON bt.date_id = dt.date_id
         """
-        if start_date and end_date:
+        if start_date is not None and end_date is not None:
             query += " WHERE dt.date BETWEEN :start_date AND :end_date"
         query += " GROUP BY t.transport_name"
         
@@ -95,7 +95,7 @@ def get_equipment_stats(engine, start_date=None, end_date=None):
             JOIN dim_equipment e ON fee.equipment_id = e.equipment_id
             JOIN dim_date_time dt ON fee.purchase_date_id = dt.date_id
         """
-        if start_date and end_date:
+        if start_date is not None and end_date is not None:
             query += " WHERE dt.date BETWEEN :start_date AND :end_date"
         query += " GROUP BY e.equipment_type"
         
@@ -111,7 +111,7 @@ def get_mission_type_stats(engine, start_date=None, end_date=None):
             JOIN dim_mission_type mt ON bt.mission_type_id = mt.mission_type_id
             JOIN dim_date_time dt ON bt.date_id = dt.date_id
         """
-        if start_date and end_date:
+        if start_date is not None and end_date is not None:
             query += " WHERE dt.date BETWEEN :start_date AND :end_date"
         query += " GROUP BY mt.mission_type_name"
         
@@ -205,23 +205,30 @@ min_date, max_date = get_date_range(engine)
 
 # Add date range filters in the sidebar
 st.sidebar.header("Date Range Filter")
-start_date = st.sidebar.date_input(
-    "Start Date",
-    min_date,
-    min_value=min_date,
-    max_value=max_date
-)
-end_date = st.sidebar.date_input(
-    "End Date",
-    max_date,
-    min_value=min_date,
-    max_value=max_date
-)
 
-# Validate date range
-if start_date > end_date:
-    st.sidebar.error("Error: End date must be after start date.")
-    st.stop()
+# Only show date inputs if we have dates in the database
+if min_date is not None and max_date is not None:
+    start_date = st.sidebar.date_input(
+        "Start Date",
+        min_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+    end_date = st.sidebar.date_input(
+        "End Date",
+        max_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+
+    # Validate date range
+    if start_date > end_date:
+        st.sidebar.error("Error: End date must be after start date.")
+        st.stop()
+else:
+    st.sidebar.info("No date data available in the database.")
+    start_date = None
+    end_date = None
 
 # Add refresh interval selector (minimum 0.1 seconds)
 refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 0.1, 60.0, 0.1, step=0.1)
@@ -300,7 +307,10 @@ def display_dashboard():
     
     with dates_container:
         st.header("Selected Date Range")
-        st.write(f"From: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        if start_date is not None and end_date is not None:
+            st.write(f"From: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        else:
+            st.write("No date range selected - showing all data")
         
         # Add mission type statistics
         st.header("Mission Type Distribution")

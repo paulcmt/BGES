@@ -66,11 +66,9 @@ CREATE TABLE IF NOT EXISTS fact_employee_equipment (
     id_materiel VARCHAR(50) PRIMARY KEY,
     equipment_id VARCHAR(50),
     employee_id VARCHAR(50),
-    location_id INT,
     purchase_date_id TIMESTAMP,
     FOREIGN KEY (equipment_id) REFERENCES dim_equipment(equipment_id),
     FOREIGN KEY (employee_id) REFERENCES dim_employee(employee_id),
-    FOREIGN KEY (location_id) REFERENCES dim_location(location_id),
     FOREIGN KEY (purchase_date_id) REFERENCES dim_date_time(date_id)
 );
 

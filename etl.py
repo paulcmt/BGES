@@ -99,6 +99,22 @@ class MappingCache:
 # Initialize the cache
 mapping_cache = MappingCache()
 
+def create_db_engine():
+    """
+    Create a connection to the PostgreSQL database
+    """
+    try:
+        # Create SQLAlchemy engine
+        engine = sqlalchemy_create_engine(
+            f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        )
+        
+        return engine
+        
+    except Exception as e:
+        print_message(f"Error connecting to database: {str(e)}", ERROR)
+        raise
+
 # Cache for city coordinates with increased size
 @lru_cache(maxsize=5000)
 def get_city_coordinates(city: str, country: str) -> Optional[Tuple[float, float]]:
@@ -197,6 +213,57 @@ def extract_data_for_date(date):
             city_data_dict[city] = city_data
 
     return city_data_dict
+
+def extract_equipment_data() -> pd.DataFrame:
+    """
+    Extract equipment impact data from materiel_informatique_impact.csv
+    Returns a DataFrame with equipment type, model, and CO2 impact information
+    """
+    try:
+        # Read the impact CSV file
+        impact_df = pd.read_csv('data/materiel_informatique_impact.csv')
+        
+        # Rename columns to match our schema
+        impact_df = impact_df.rename(columns={
+            'Type': 'equipment_type',
+            'Modèle': 'model',
+            'Impact': 'co2_impact_kg'
+        })
+        
+        # Strip extra spaces and convert to lowercase
+        impact_df['equipment_type'] = impact_df['equipment_type'].str.strip().str.lower()
+        impact_df['model'] = impact_df['model'].str.strip().str.lower()
+        
+        # Generate random equipment_id for each row
+        impact_df['equipment_id'] = impact_df.index.astype(str)
+        
+        # Select and order columns
+        impact_df = impact_df[[
+            'equipment_id', 'equipment_type', 'model', 'co2_impact_kg'
+        ]]
+
+        return impact_df
+        
+    except Exception as e:
+        print_message(f"Error extracting equipment impact data: {str(e)}", ERROR)
+        raise
+
+def extract_personnel_data():
+    """
+    Extract personnel data for all cities
+    """
+    personnel_dfs = []
+    
+    for city in CITIES:
+        personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
+        if os.path.exists(personnel_path):
+            personnel_df = pd.read_csv(personnel_path, delimiter=';')
+            personnel_dfs.append(personnel_df)
+    
+    if personnel_dfs:
+        return pd.concat(personnel_dfs, ignore_index=True)
+    else:
+        return pd.DataFrame()
 
 def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -362,52 +429,86 @@ def transform_all_personnel_data(extracted_data: Dict[str, Dict[str, pd.DataFram
     else:
         return pd.DataFrame()
 
-def transform_equipment_data(equipment_df: pd.DataFrame) -> pd.DataFrame:
+def transform_equipment_data(equipment_df: pd.DataFrame, conn) -> pd.DataFrame:
     """
     Transform equipment data to match dim_equipment schema
     """
+    # Read dim_equipment
+    dim_equipment = pd.read_sql("""
+        SELECT equipment_id, equipment_type, model, co2_impact_kg
+        FROM dim_equipment
+    """, conn)
+
+    # Create mappings for better matching
+    model_type_mapping = dict(zip(dim_equipment['model'].str.lower(), dim_equipment['equipment_type'].str.lower()))
+    type_model_mapping = dict(zip(
+        zip(dim_equipment['equipment_type'].str.lower(), dim_equipment['model'].str.lower()),
+        dim_equipment['equipment_id']
+    ))
+    
     # Rename columns to match database schema
     transformed = equipment_df.rename(columns={
-        'ID_MATERIELINFO': 'equipment_id',
+        'ID_MATERIELINFO': 'id_materiel',
         'TYPE': 'equipment_type',
         'MODELE': 'model',
         'DATE_ACHAT': 'purchase_date',
-        'ID_PERSONNEL': 'employee_id'  # Add employee_id mapping
+        'ID_PERSONNEL': 'employee_id'
     })
     
-    # We need to get the CO2 impact from materiel_informatique_impact.csv
-    impact_file = os.path.join(BASE_PATH, "materiel_informatique_impact.csv")
-    if os.path.exists(impact_file):
-        impact_df = pd.read_csv(impact_file, delimiter=',')
-        
-        # Create a mapping of model to equipment type
-        model_type_mapping = dict(zip(impact_df['Modèle'], impact_df['Type']))
-        
-        # Fill in missing equipment types based on model
-        missing_types = transformed['equipment_type'].isna() | (transformed['equipment_type'] == ' ')
-        if missing_types.any():
-            transformed.loc[missing_types, 'equipment_type'] = transformed.loc[missing_types, 'model'].map(model_type_mapping)
-        
-        # Create a mapping of equipment type to CO2 impact
-        impact_mapping = dict(zip(impact_df['Type'], impact_df['Impact']))
-        # Map the CO2 impact to each equipment
-        transformed['co2_impact_kg'] = transformed['equipment_type'].map(impact_mapping)
-    else:
-        transformed['co2_impact_kg'] = 0
+    # Check for missing data
+    missing_type = transformed['equipment_type'].isna().sum()
+    missing_model = transformed['model'].isna().sum()
     
-    # Convert CO2 impact to decimal
-    transformed['co2_impact_kg'] = pd.to_numeric(transformed['co2_impact_kg'], errors='coerce')
+    if missing_type > 0:
+        print_message(f"Warning: Found {missing_type} records with missing equipment type", WARNING)
+    if missing_model > 0:
+        print_message(f"Warning: Found {missing_model} records with missing model", WARNING)
+    
+    # Convert equipment_type and model to string, handling NaN values
+    transformed['equipment_type'] = transformed['equipment_type'].fillna('').astype(str).str.strip().str.lower()
+    transformed['model'] = transformed['model'].fillna('').astype(str).str.strip().str.lower()
+    
+    # Replace 'nan' strings with empty strings
+    transformed['equipment_type'] = transformed['equipment_type'].replace('nan', '')
+    transformed['model'] = transformed['model'].replace('nan', '')
+    
+    # Fill in missing equipment types based on model
+    missing_types = (transformed['equipment_type'] == '')
+    if missing_types.any():
+        transformed.loc[missing_types, 'equipment_type'] = transformed.loc[missing_types, 'model'].map(model_type_mapping)
+    
+    # Add default model for any equipment type when no model is specified
+    default_model_mask = (transformed['model'] == '')
+    if default_model_mask.any():
+        transformed.loc[default_model_mask, 'model'] = 'modèle par défaut'
+    
+    # Create tuples for mapping
+    type_model_tuples = list(zip(transformed['equipment_type'], transformed['model']))
+    
+    # Map the equipment_type and model to the equipment_id
+    transformed['equipment_id'] = [type_model_mapping.get(tup, None) for tup in type_model_tuples]
+    
+    # Log details about missing matches
+    missing_equipment_ids = transformed['equipment_id'].isna()
+    if missing_equipment_ids.any():
+        missing_records = transformed[missing_equipment_ids]
+        for _, record in missing_records.iterrows():
+            print_message(
+                f"Warning: No matching equipment_id found for type='{record['equipment_type']}', model='{record['model']}'",
+                WARNING
+            )
+        transformed = transformed[~missing_equipment_ids]
     
     # Convert purchase date to datetime
     transformed['purchase_date'] = pd.to_datetime(transformed['purchase_date'], errors='coerce')
     
     # Select only the columns we need
-    required_columns = ['equipment_id', 'equipment_type', 'model', 'co2_impact_kg', 'purchase_date', 'employee_id']
+    required_columns = ['id_materiel', 'equipment_id', 'employee_id', 'purchase_date']
     transformed = transformed[required_columns]
     
     return transformed
 
-def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
+def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFrame]], conn) -> pd.DataFrame:
     """
     Transform equipment data from all cities into a single DataFrame
     """
@@ -415,7 +516,7 @@ def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFram
     
     for city, city_data in extracted_data.items():
         if 'informatique' in city_data:
-            transformed_df = transform_equipment_data(city_data['informatique'])
+            transformed_df = transform_equipment_data(city_data['informatique'], conn)
             equipment_dfs.append(transformed_df)
     
     if equipment_dfs:
@@ -423,22 +524,6 @@ def transform_all_equipment_data(extracted_data: Dict[str, Dict[str, pd.DataFram
         return result
     else:
         return pd.DataFrame()
-
-def create_db_engine():
-    """
-    Create a connection to the PostgreSQL database
-    """
-    try:
-        # Create SQLAlchemy engine
-        engine = sqlalchemy_create_engine(
-            f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-        )
-        
-        return engine
-        
-    except Exception as e:
-        print_message(f"Error connecting to database: {str(e)}", ERROR)
-        raise
 
 def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_equipment: pd.DataFrame, engine):
     """
@@ -559,20 +644,6 @@ def load_dimension_tables(transformed_missions: pd.DataFrame, transformed_equipm
                             transport_data
                         )
 
-                # Load dim_equipment with caching
-                if not transformed_equipment.empty:
-                    batch_size = 1000
-                    for i in range(0, len(transformed_equipment), batch_size):
-                        batch = transformed_equipment.iloc[i:i+batch_size]
-                        conn.execute(
-                            text("""
-                                INSERT INTO dim_equipment (equipment_id, equipment_type, model, co2_impact_kg)
-                                VALUES (:equipment_id, :equipment_type, :model, :co2_impact_kg)
-                                ON CONFLICT (equipment_id) DO NOTHING
-                            """),
-                            batch.to_dict(orient='records')
-                        )
-
     except Exception as e:
         print_message(f"Error loading dimension tables: {str(e)}", ERROR)
         raise
@@ -655,53 +726,34 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_equipment: 
                     valid_equipment = transformed_equipment[transformed_equipment['employee_id'].isin(mapping_cache.employee_mapping)]
                     
                     if not valid_equipment.empty:
-                        # Add location_id using vectorized operations
-                        valid_equipment['location_id'] = valid_equipment['employee_id'].map(
-                            lambda x: mapping_cache.location_mapping.get(mapping_cache.employee_location_mapping.get(x, (None, None)))
-                        )
-                        
-                        # Convert location_id to integer, replacing NaN with None
-                        valid_equipment['location_id'] = pd.to_numeric(valid_equipment['location_id'], errors='coerce')
-                        valid_equipment['location_id'] = valid_equipment['location_id'].astype('Int64')
-                        
-                        # Check for missing mappings
-                        missing_location = valid_equipment['location_id'].isna().sum()
-                        if missing_location > 0:
-                            print_message(f"Warning: {missing_location} equipment records have missing location mappings", WARNING)
-                        
                         # Process in batches
                         batch_size = 1000
                         total_batches = (len(valid_equipment) + batch_size - 1) // batch_size
                         
                         for i in range(0, len(valid_equipment), batch_size):
                             batch = valid_equipment.iloc[i:i+batch_size]
-                            equipment_data = batch.rename(columns={
-                                'equipment_id': 'id_materiel',
-                                'purchase_date': 'purchase_date_id'
-                            }).copy()
                             
-                            equipment_data['equipment_id'] = equipment_data['id_materiel']
-                            equipment_data = equipment_data[[
-                                'id_materiel', 'equipment_id', 'employee_id', 
-                                'location_id', 'purchase_date_id'
-                            ]]
+                            # Create a copy of the batch with the correct column names
+                            equipment_data = batch.copy()
+                            equipment_data = equipment_data.rename(columns={
+                                'purchase_date': 'purchase_date_id'
+                            })
                             
                             # Convert to dict and handle None values
                             records = equipment_data.to_dict(orient='records')
                             for record in records:
-                                if pd.isna(record['location_id']):
-                                    record['location_id'] = None
-                                    print_message(f"Location ID is NaN for equipment {record['id_materiel']}", WARNING)
+                                if pd.isna(record['purchase_date_id']):
+                                    record['purchase_date_id'] = None
                             
                             if records:
                                 try:
                                     conn.execute(
                                         text("""
                                             INSERT INTO fact_employee_equipment (
-                                                id_materiel, equipment_id, employee_id, location_id, purchase_date_id
+                                                id_materiel, equipment_id, employee_id, purchase_date_id
                                             )
                                             VALUES (
-                                                :id_materiel, :equipment_id, :employee_id, :location_id, :purchase_date_id
+                                                :id_materiel, :equipment_id, :employee_id, :purchase_date_id
                                             )
                                             ON CONFLICT (id_materiel) DO NOTHING
                                         """),
@@ -715,23 +767,6 @@ def load_fact_tables(transformed_missions: pd.DataFrame, transformed_equipment: 
         print_message(f"Error loading fact tables: {str(e)}", ERROR)
         raise
 
-def extract_personnel_data():
-    """
-    Extract personnel data for all cities
-    """
-    personnel_dfs = []
-    
-    for city in CITIES:
-        personnel_path = f"{BASE_PATH}/BDD_BGES_{city}/PERSONNEL_{city}.txt"
-        if os.path.exists(personnel_path):
-            personnel_df = pd.read_csv(personnel_path, delimiter=';')
-            personnel_dfs.append(personnel_df)
-    
-    if personnel_dfs:
-        return pd.concat(personnel_dfs, ignore_index=True)
-    else:
-        return pd.DataFrame()
-
 def process_date(date):
     """
     Process ETL for a specific date
@@ -743,15 +778,18 @@ def process_date(date):
     try:
         # Extract data
         data = extract_data_for_date(date)
-        # Transform data
-        transformed_missions = transform_all_mission_data(data)
-        transformed_equipment = transform_all_equipment_data(data)
-
-        # Load data
+        
+        # Create database connection
         engine = create_db_engine()
         try:
-            load_dimension_tables(transformed_missions, transformed_equipment, engine)
-            load_fact_tables(transformed_missions, transformed_equipment, engine)
+            with engine.connect() as conn:
+                # Transform data
+                transformed_missions = transform_all_mission_data(data)
+                transformed_equipment = transform_all_equipment_data(data, conn)
+
+                # Load data
+                load_dimension_tables(transformed_missions, transformed_equipment, engine)
+                load_fact_tables(transformed_missions, transformed_equipment, engine)
         finally:
             engine.dispose()
         
@@ -768,6 +806,8 @@ if __name__ == "__main__":
     # First, process personnel data for all cities
     print_message("Processing personnel data for all cities...")
     personnel_data = extract_personnel_data()
+    equipment_data = extract_equipment_data()
+
     transformed_personnel = transform_personnel_data(personnel_data)
     
     # Load sector data first
@@ -829,7 +869,33 @@ if __name__ == "__main__":
     except Exception as e:
         print_message(f"Error loading personnel data: {str(e)}", ERROR)
         raise
-    
+
+    # Load equipment data into dim_equipment
+    print_message("Loading equipment data into dimension tables...")
+    try:
+        engine = create_db_engine()
+        with engine.connect() as conn:
+            # Load dim_equipment
+            if not equipment_data.empty:
+                conn.execute(
+                    text("""
+                        INSERT INTO dim_equipment (
+                            equipment_id, equipment_type, model, co2_impact_kg
+                        )
+                        VALUES (
+                            :equipment_id, :equipment_type, :model, :co2_impact_kg
+                        )
+                        ON CONFLICT (equipment_id) DO NOTHING
+                    """),
+                    equipment_data.to_dict(orient='records')
+                )
+                conn.commit()
+        engine.dispose()
+        print_message("✓ Equipment data loaded successfully", SUCCESS)
+    except Exception as e:
+        print_message(f"Error loading equipment data: {str(e)}", ERROR)
+        raise
+
     # Get list of dates from mission files
     mission_dates = set()
     

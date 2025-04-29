@@ -1,7 +1,7 @@
 # TODO
 
-- [ ] Corriger le problème dim_equipment
-- [ ] Vérifier que y'a pas de données manquantes dans dim_equipment
+- [X] Corriger le problème dim_equipment
+- [X] Vérifier que y'a pas de données manquantes dans dim_equipment
 - [ ] Mettre à jour le plantuml
 - [X] Filtres dates streamlit
 - [ ] Question 18 à faire

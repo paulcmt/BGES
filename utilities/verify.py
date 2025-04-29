@@ -1,14 +1,23 @@
+import os
 import pandas as pd
 from sqlalchemy import text
-from ..etl import create_db_engine
+from dotenv import load_dotenv
+from etl import create_db_engine
 from constants import RESET, INFO, SUCCESS, WARNING, ERROR
+
+# Load environment variables
+load_dotenv('db.env')
+
+def print_message(message, color="\033[94m"):
+    """Helper function to print colored messages"""
+    print(f"{color}{message}\033[0m")
 
 def verify_table_data(engine, table_name):
     """
     Verify data quality for a specific table
     """
     try:
-        print(f"\n{INFO}Verifying table: {table_name}{RESET}")
+        print(f"\n\033[94mVerifying table: {table_name}\033[0m")
         
         # Get table data
         with engine.connect() as conn:
@@ -16,13 +25,13 @@ def verify_table_data(engine, table_name):
         
         # Check for empty table
         if len(df) == 0:
-            print(f"{WARNING}Table {table_name} is empty{RESET}")
+            print(f"\033[93mWarning: Table {table_name} is empty\033[0m")
             return False
         
         # Check for NaN/None values
         null_counts = df.isnull().sum()
         if null_counts.any():
-            print(f"{WARNING}Found null values in {table_name}:{RESET}")
+            print(f"\033[93mWarning: Found null values in {table_name}:\033[0m")
             for column, count in null_counts[null_counts > 0].items():
                 print(f"  {column}: {count} null values")
             return False
@@ -32,7 +41,7 @@ def verify_table_data(engine, table_name):
         for column in string_columns:
             empty_strings = (df[column] == '').sum()
             if empty_strings > 0:
-                print(f"{WARNING}Found {empty_strings} empty strings in {table_name}.{column}{RESET}")
+                print(f"\033[93mWarning: Found {empty_strings} empty strings in {table_name}.{column}\033[0m")
                 return False
         
         # Check for zero values in numeric columns that shouldn't be zero
@@ -41,14 +50,14 @@ def verify_table_data(engine, table_name):
             if column not in ['day', 'month', 'year', 'hour', 'minute', 'second']:  # Exclude date components
                 zero_values = (df[column] == 0).sum()
                 if zero_values > 0:
-                    print(f"{WARNING}Found {zero_values} zero values in {table_name}.{column}{RESET}")
+                    print(f"\033[93mWarning: Found {zero_values} zero values in {table_name}.{column}\033[0m")
                     return False
         
-        print(f"{SUCCESS}Table {table_name} passed all checks{RESET}")
+        print(f"\033[92m✓ Table {table_name} passed all checks\033[0m")
         return True
     
     except Exception as e:
-        print(f"{ERROR}Error verifying table {table_name}: {str(e)}{RESET}")
+        print(f"\033[91mError verifying table {table_name}: {str(e)}\033[0m")
         return False
 
 def verify_foreign_keys(engine):
@@ -56,9 +65,9 @@ def verify_foreign_keys(engine):
     Verify referential integrity of foreign keys
     """
     try:
-        print(f"\n{INFO}Verifying foreign key relationships{RESET}")
+        print("\n\033[94mVerifying foreign key relationships\033[0m")
         
-        # Define foreign key relationships with correct column names
+        # Define foreign key relationships
         fk_relationships = [
             ('fact_business_travel', 'employee_id', 'dim_employee', 'employee_id'),
             ('fact_business_travel', 'mission_type_id', 'dim_mission_type', 'mission_type_id'),
@@ -68,7 +77,6 @@ def verify_foreign_keys(engine):
             ('fact_business_travel', 'date_id', 'dim_date_time', 'date_id'),
             ('fact_employee_equipment', 'equipment_id', 'dim_equipment', 'equipment_id'),
             ('fact_employee_equipment', 'employee_id', 'dim_employee', 'employee_id'),
-            ('fact_employee_equipment', 'location_id', 'dim_location', 'location_id'),
             ('fact_employee_equipment', 'purchase_date_id', 'dim_date_time', 'date_id'),
             ('dim_employee', 'sector_id', 'dim_sector', 'sector_id')
         ]
@@ -86,15 +94,59 @@ def verify_foreign_keys(engine):
                 result = conn.execute(text(query)).scalar()
                 
                 if result > 0:
-                    print(f"{WARNING}Found {result} orphaned foreign keys in {table}.{fk_column} referencing {ref_table}.{ref_column}{RESET}")
+                    print(f"\033[93mWarning: Found {result} orphaned foreign keys in {table}.{fk_column} referencing {ref_table}.{ref_column}\033[0m")
                     all_valid = False
         
         if all_valid:
-            print(f"{SUCCESS}All foreign key relationships are valid{RESET}")
+            print("\033[92m✓ All foreign key relationships are valid\033[0m")
         return all_valid
     
     except Exception as e:
-        print(f"{ERROR}Error verifying foreign keys: {str(e)}{RESET}")
+        print(f"\033[91mError verifying foreign keys: {str(e)}\033[0m")
+        return False
+
+def verify_equipment_data(engine):
+    """
+    Verify equipment data quality
+    """
+    try:
+        print("\n\033[94mVerifying equipment data\033[0m")
+        
+        with engine.connect() as conn:
+            # Check for equipment types and models that are not strings
+            query = """
+                SELECT COUNT(*) 
+                FROM dim_equipment 
+                WHERE equipment_type IS NULL 
+                   OR model IS NULL 
+                   OR equipment_type = '' 
+                   OR model = ''
+            """
+            result = conn.execute(text(query)).scalar()
+            
+            if result > 0:
+                print(f"\033[93mWarning: Found {result} invalid equipment records (null or empty values)\033[0m")
+                return False
+            
+            # Check for duplicate equipment type and model combinations
+            query = """
+                SELECT equipment_type, model, COUNT(*) as count
+                FROM dim_equipment
+                GROUP BY equipment_type, model
+                HAVING COUNT(*) > 1
+            """
+            duplicates = pd.read_sql(query, conn)
+            
+            if not duplicates.empty:
+                print("\033[93mWarning: Found duplicate equipment type and model combinations:\033[0m")
+                print(duplicates)
+                return False
+        
+        print("\033[92m✓ Equipment data passed all checks\033[0m")
+        return True
+    
+    except Exception as e:
+        print(f"\033[91mError verifying equipment data: {str(e)}\033[0m")
         return False
 
 def main():
@@ -127,17 +179,20 @@ def main():
         # Verify foreign keys
         fk_valid = verify_foreign_keys(engine)
         
+        # Verify equipment data specifically
+        equipment_valid = verify_equipment_data(engine)
+        
         # Print final result
-        if all_tables_valid and fk_valid:
-            print(f"\n{SUCCESS}All data quality checks passed successfully{RESET}")
+        if all_tables_valid and fk_valid and equipment_valid:
+            print("\n\033[92m✓ All data quality checks passed successfully\033[0m")
         else:
-            print(f"\n{WARNING}Some data quality issues were found. Please review the warnings above.{RESET}")
+            print("\n\033[93mWarning: Some data quality issues were found. Please review the warnings above.\033[0m")
         
         # Close the engine
         engine.dispose()
         
     except Exception as e:
-        print(f"{ERROR}Error during verification: {str(e)}{RESET}")
+        print(f"\033[91mError during verification: {str(e)}\033[0m")
 
 if __name__ == "__main__":
     main() 
