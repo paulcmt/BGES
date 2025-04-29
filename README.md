@@ -8,7 +8,8 @@ This project is about creating a Data Warehouse for a company that wants to esti
 2. Install docker (cf https://www.docker.com/products/docker-desktop/)
 3. Create a virtual environment
    - `python -m venv venv`
-   - `source venv/bin/activate`
+   - on Mac: `source venv/bin/activate`
+   - on Windows: `source venv/Scripts/activate`
 4. Install the dependencies
    - `pip install -r requirements.txt`
 5. Run the docker container
