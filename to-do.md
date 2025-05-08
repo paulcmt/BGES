@@ -15,7 +15,6 @@
 - [X] Système de cache
 - [X] Système de traduction
 - [X] Transformation des facteurs d'émissions
-- [X] Screenshots console
 - [X] Streamlit en temps réel
 - [ ] Parler du traitement des données manquantes
 - [ ] Fuseau horaire
