@@ -339,6 +339,10 @@ def transform_mission_data(mission_df: pd.DataFrame) -> pd.DataFrame:
         if not invalid_records.empty:
             transformed.loc[invalid_mask, 'DISTANCE_KM'] = median_distance
     
+    # If the transport used is plane, add 95km
+    plane_mask = transformed['TRANSPORT_ID'].str.lower() == 'plane'
+    transformed.loc[plane_mask, 'DISTANCE_KM'] += 95
+    
     # Double the distance for round trips
     round_trips = transformed['IS_ROUND_TRIP'].sum()
     transformed.loc[transformed['IS_ROUND_TRIP'], 'DISTANCE_KM'] *= 2

@@ -5,7 +5,7 @@ This project is about creating a Data Warehouse for a company that wants to esti
 ## HOW TO RUN THE PROJECT ?
 
 1. Clone the repository
-2. Install docker (cf https://www.docker.com/products/docker-desktop/)
+2. Install docker (cf `https://www.docker.com/products/docker-desktop/`)
 3. Create a virtual environment
    - `python -m venv venv`
    - on Mac: `source venv/bin/activate`

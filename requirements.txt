@@ -1,7 +1,7 @@
+numpy>=1.26.0
 ipykernel
 pandas
 pyspark
-numpy
 pyarrow
 sqlalchemy
 psycopg2-binary
